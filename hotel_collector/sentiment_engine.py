@@ -238,6 +238,21 @@ def get_reputation_signals(hotel_id: str, tier: str,
         """, (hotel_id,)).fetchone()
         review_count = int(row[0]) if row else 0
 
+        # ── Google/Booking.com 评分补充信号（冷启动时填补 rep_adj 空缺）────
+        google_adj = 0.0
+        try:
+            g_row = conn.execute("""
+                SELECT google_rating FROM google_ratings
+                WHERE hotel_id = ? AND google_rating IS NOT NULL
+                ORDER BY captured_date DESC LIMIT 1
+            """, (hotel_id,)).fetchone()
+            if g_row and g_row[0]:
+                # 5分制评分：4.5=优秀，4.0=良好，3.5=一般，<3.0=差
+                # 映射到 ±0.08 调节范围（与sentiment_rep_adj协同但较弱）
+                google_adj = round(max(-0.08, min(0.08, (float(g_row[0]) - 4.0) * 0.16)), 4)
+        except Exception:
+            pass
+
         # 各信号计算
         R_t             = compute_R_t(hotel_id, conn)
         M_t             = compute_M_t(hotel_id, conn)
@@ -248,12 +263,16 @@ def get_reputation_signals(hotel_id: str, tier: str,
         gamma_eff = GAMMA_MAX * confidence
 
         # 价格调节幅度 = γ_eff × ΔR_t + MOMENTUM_BOOST × M_t
-        delta_R_safe = delta_R if delta_R is not None else 0.0
-        M_t_safe     = M_t     if M_t     is not None else 0.0
+        # 冷启动混合：当置信度不足时，按比例引入 google_adj（最多权重 40%）
+        delta_R_safe  = delta_R if delta_R is not None else 0.0
+        M_t_safe      = M_t     if M_t     is not None else 0.0
+        sentiment_adj = gamma_eff * delta_R_safe + MOMENTUM_BOOST * M_t_safe
+        # cold-start blend: sentiment权重=confidence, google_rating权重=(1-confidence)*0.4
+        google_weight = (1.0 - confidence) * 0.4
         rep_adj = round(
             max(-GAMMA_MAX - MOMENTUM_BOOST,
                 min(GAMMA_MAX + MOMENTUM_BOOST,
-                    gamma_eff * delta_R_safe + MOMENTUM_BOOST * M_t_safe)),
+                    sentiment_adj + google_weight * google_adj)),
             4
         )
 

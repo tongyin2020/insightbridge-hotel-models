@@ -155,7 +155,7 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
     lo, hi = clamp_ranges.get(star, (200, 8000))
     base = max(lo, min(hi, base))
 
-    # Step C：声誉情感修正
+    # Step C：声誉情感修正（review_sentiment + google_ratings 双源）
     rep_adj = 0.0
     if _SENTIMENT_OK:
         try:
@@ -163,13 +163,35 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
             rep_adj = float(signals.get("rep_adj", 0.0))
         except Exception:
             pass
+
+    base = base * (1.0 + rep_adj)
+
+    # Step D：OTA库存紧张信号修正（inventory_signals → 需求溢价）
+    inv_adj = 0.0
+    if shared_conn:
+        try:
+            today_inv = shared_conn.execute("""
+                SELECT avail_level, rooms_remaining
+                FROM inventory_signals
+                WHERE hotel_id = ?
+                  AND captured_at >= datetime('now', '-24 hours')
+                ORDER BY captured_at DESC LIMIT 1
+            """, (hotel_id,)).fetchone()
+            if today_inv:
+                if today_inv[0] == "low":
+                    inv_adj = 0.07    # 仅剩1-3间：需求溢价+7%
+                elif today_inv[0] == "medium":
+                    inv_adj = 0.03    # 剩4-7间：温和溢价+3%
+        except Exception:
+            pass
+
     if shared_conn:
         try:
             shared_conn.close()
         except Exception:
             pass
 
-    base = base * (1.0 + rep_adj)
+    base = base * (1.0 + inv_adj)
     base = max(lo, min(hi, base))
     return round(base / 10) * 10
 

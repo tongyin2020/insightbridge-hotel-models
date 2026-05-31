@@ -1556,7 +1556,7 @@ def fetch_inventory_signals(hotel: dict, checkin: str,
 # ══════════════════════════════════════════════════════════════════════════
 def fetch_google_rating(hotel: dict, conn: sqlite3.Connection,
                         sess: requests.Session) -> dict:
-    """从 TripAdvisor / Booking.com 抓取酒店综合评分（Google 反爬太强，改用多源聚合）"""
+    """从 Booking.com 抓取酒店综合评分（Playwright版，绕过202 bot challenge）"""
     today_str = datetime.now().strftime("%Y-%m-%d")
     result = {"google_rating": None, "review_count": None, "price_level": None}
 
@@ -1570,7 +1570,69 @@ def fetch_google_rating(hotel: dict, conn: sqlite3.Connection,
 
     rating, count, source_tag = None, None, ""
 
-    # ── 方法1：TripAdvisor 搜索结果页 JSON-LD ─────────────────────────────
+    # ── 方法0（优先）：Playwright 抓 Booking.com 评分（requests.get → 202 bot challenge，必须用Playwright）──
+    bcom_id = hotel.get("booking_com_id", "")
+    if bcom_id and rating is None:
+        try:
+            slug = hotel["en"].lower().replace(" ", "-").replace("'", "")
+            url = f"https://www.booking.com/hotel/mo/{slug}.html?selected_currency=MOP"
+            with sync_playwright() as pw:
+                browser = pw.chromium.launch(
+                    headless=True,
+                    args=["--no-sandbox", "--disable-blink-features=AutomationControlled",
+                          "--disable-dev-shm-usage"],
+                )
+                ctx = browser.new_context(
+                    user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+                    locale="zh-HK",
+                )
+                page = ctx.new_page()
+                page.goto(url, timeout=25000, wait_until="domcontentloaded")
+                page.wait_for_timeout(2500)
+                content = page.content()
+                ctx.close()
+                browser.close()
+            soup = BeautifulSoup(content, "html.parser")
+            # Booking.com 10分制评分 — 尝试多个选择器（Booking.com 会改class名）
+            for sel in [
+                '[data-testid="review-score-right-component"] .ac4a7896c7',
+                '[data-testid="review-score"] .b5cd09854e',
+                '.b5cd09854e', '.d10a6220b4', '.a3b8729ab1.d86cee9b25',
+                '[class*="review-score"] [class*="score"]',
+            ]:
+                tag = soup.select_one(sel)
+                if tag:
+                    try:
+                        raw = float(tag.get_text(strip=True).replace(",", "."))
+                        if 1.0 <= raw <= 10.0:
+                            rating = round(raw / 2, 1)   # 10分制 → 5分制
+                            source_tag = "booking_com_playwright"
+                            break
+                    except Exception:
+                        pass
+            # JSON-LD fallback（页面内嵌结构化数据）
+            if rating is None:
+                for m in re.finditer(r'<script[^>]*application/ld\+json[^>]*>(.*?)</script>',
+                                     content, re.DOTALL):
+                    try:
+                        d = json.loads(m.group(1))
+                        items = [d] if isinstance(d, dict) else (d if isinstance(d, list) else [])
+                        for item in items:
+                            agg = item.get("aggregateRating", {}) if isinstance(item, dict) else {}
+                            if agg.get("ratingValue"):
+                                raw = float(agg["ratingValue"])
+                                rating = round(raw / 2 if raw > 5 else raw, 1)
+                                count  = int(agg.get("reviewCount", 0))
+                                source_tag = "booking_com_jsonld"
+                                break
+                        if rating:
+                            break
+                    except Exception:
+                        pass
+        except Exception as e_pw:
+            log.debug(f"  fetch_google_rating playwright ({hotel['cn']}): {e_pw}")
+
+    # ── 方法1：TripAdvisor 搜索结果页 JSON-LD（Booking.com Playwright已优先，这里作备用）──
     try:
         ta_query = f'site:tripadvisor.com "{hotel["en"]}" Macau'
         ta_url = f"https://www.tripadvisor.com/Search?q={requests.utils.quote(hotel['en'] + ' Macau')}"
