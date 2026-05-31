@@ -127,6 +127,7 @@ HOTELS_76: list[dict] = [
      "star": 5, "tier": "5_deluxe", "area": "澳门半岛", "rooms": 597,
      "booking_url": "https://www.mgm.mo/en/stay/mgm-macau",
      "ibe_url": "https://www.mgm.mo/en/stay/mgm-macau",
+     "mgm_booking": {"hotel_code": "001", "template": "001STD"},
      "booking_com_id": "308424", "agoda_id": "20882"},
 
     {"id": "MAC_5DX_T13_007",    "cn": "十三皇宫",       "en": "The 13 Hotel",
@@ -151,6 +152,7 @@ HOTELS_76: list[dict] = [
      "star": 5, "tier": "5_deluxe", "area": "路氹城", "rooms": 1400,
      "booking_url": "https://www.mgm.mo/en/stay/mgm-cotai",
      "ibe_url": "https://www.mgm.mo/en/stay/mgm-cotai",
+     "mgm_booking": {"hotel_code": "002", "template": "002STD"},
      "booking_com_id": "5327600", "agoda_id": "7960972"},
 
     {"id": "MAC_5DX_ALTI_011",   "cn": "新濠锋",         "en": "Altira Macau",
@@ -893,6 +895,71 @@ def _probe_inventory(page, html: str) -> tuple[Optional[int], bool]:
 # ── Playwright 全局实例（每次采集共用一个浏览器进程）
 _PW_CONTEXT = None
 
+
+def _fetch_mgm_price(hotel: dict, checkin: str, checkout: str, ctx) -> dict | None:
+    """Method 3c: MGM 专用 — 访问 booking.mgm.mo/api/calendar/get 获取每日价格
+
+    MGM 的预订引擎在独立域名 booking.mgm.mo，通过日历 API 返回精确 BAR 价格。
+    API: POST https://booking.mgm.mo/api/calendar/get
+    响应: {"date":"2026-06-08","price1":4494.80,"price2":4494.80,"price3":4919.80}
+      price1 = BAR (最低可订价)
+      price3 = 豪华/高级房型价
+    """
+    mgm = hotel.get("mgm_booking", {})
+    if not mgm:
+        return None
+
+    hotel_code = mgm["hotel_code"]
+    template   = mgm["template"]
+    result_prices = []
+
+    try:
+        page = ctx.new_page()
+
+        def on_mgm_resp(response):
+            if "calendar/get" in response.url and response.status == 200:
+                try:
+                    body = response.json()
+                    data = body.get("data", [])
+                    for entry in data:
+                        d = entry.get("date", "")
+                        p1 = entry.get("price1")
+                        p3 = entry.get("price3")
+                        if d == checkin and p1 and 200 < p1 < 100000:
+                            result_prices.append((p1, p3))
+                            log.debug(f"  [MGM calendar] {d} price1={p1} price3={p3}")
+                except Exception as e_cal:
+                    log.debug(f"  [MGM calendar parse] {e_cal}")
+
+        page.on("response", on_mgm_resp)
+
+        mgm_url = (
+            f"https://booking.mgm.mo/selectMonthdate"
+            f"?locale=en-US&template={template}&hotel={hotel_code}"
+            f"&checkIn={checkin}&checkOut={checkout}"
+        )
+        page.goto(mgm_url, timeout=28000, wait_until="domcontentloaded")
+        try:
+            page.wait_for_load_state("networkidle", timeout=12000)
+        except PwTimeout:
+            page.wait_for_timeout(5000)
+
+        page.close()
+
+        if result_prices:
+            bar, rack = result_prices[0]
+            return {
+                "official_bar": bar,
+                "official_rack": rack if rack and rack != bar else None,
+                "source_ok": 1,
+                "notes": "mgm_calendar_api",
+            }
+    except Exception as e_mgm:
+        log.debug(f"  [MGM booking engine] {hotel['cn']} failed: {e_mgm}")
+
+    return None
+
+
 def _get_browser_context():
     """返回Playwright浏览器上下文（懒加载，不走Shifter代理）
 
@@ -1108,108 +1175,117 @@ def fetch_official_price(hotel: dict, checkin: str, sess: requests.Session) -> d
     except Exception as e_ctx:
         result["notes"] = f"playwright_err:{str(e_ctx)[:60]}"
 
+    # ── 方法3c：MGM 专用预订引擎（booking.mgm.mo/api/calendar/get）──────
+    # MGM 官网是 Next.js SPA，价格只在独立子域名 booking.mgm.mo 的日历 API 返回
+    if ctx is not None and result.get("source_ok") != 1 and hotel.get("mgm_booking"):
+        mgm_result = _fetch_mgm_price(hotel, checkin, checkout, ctx)
+        if mgm_result:
+            result.update(mgm_result)
+            log.info(f"  ✅ {checkin}: BAR={result['official_bar']} | {result['notes']}")
+            return result
+        else:
+            result["notes"] = "mgm_calendar_no_price"
+
     if ctx is not None and result.get("source_ok") != 1:
         # ── 方法3 主流程：加载酒店官网 ────────────────────────────────────
-        html = ""
-        max_bookable = None
-        sold_out_detected = False
-        captured_prices: list[float] = []
+        # MGM 已由 Method 3c 处理（booking.mgm.mo），不再重复加载 www.mgm.mo
+        if not hotel.get("mgm_booking"):
+            html = ""
+            max_bookable = None
+            sold_out_detected = False
+            captured_prices: list[float] = []
 
-        try:
-            page = ctx.new_page()
-
-            _XHR_KWS = ["rate", "price", "avail", "room", "booking", "hotel",
-                         "inventory", "offer", "tariff", "stay", "checkin",
-                         "reservation", "package", "ibe", "property"]
-
-            def on_response(response):
-                try:
-                    if response.status == 200 and any(kw in response.url.lower()
-                                                       for kw in _XHR_KWS):
-                        ct = response.headers.get("content-type", "")
-                        if "json" in ct or "javascript" in ct:
-                            try:
-                                body = response.json()
-                                text = json.dumps(body)
-                            except Exception:
-                                try:
-                                    text = response.text()
-                                except Exception:
-                                    return
-                            for p in _extract_prices(text):
-                                if 200 < p < 80000:
-                                    captured_prices.append(p)
-                except Exception:
-                    pass
-
-            page.on("response", on_response)
-
-            url = hotel["booking_url"]
-            sep = "&" if "?" in url else "?"
-            full_url = f"{url}{sep}checkin={checkin}&checkout={checkout}&adults=2&rooms=1"
-
-            page.goto(full_url, timeout=28000, wait_until="domcontentloaded")
             try:
-                page.wait_for_load_state("networkidle", timeout=10000)
-            except PwTimeout:
-                page.wait_for_timeout(5000)
+                page = ctx.new_page()
 
-            html = page.content()
-            page_prices = _extract_prices(html)
+                # 捕获所有 JSON 响应（移除 URL 关键词过滤，避免遗漏非标准 API 端点）
+                def on_response(response):
+                    try:
+                        if response.status == 200:
+                            ct = response.headers.get("content-type", "")
+                            if "json" in ct:
+                                try:
+                                    body = response.json()
+                                    text = json.dumps(body)
+                                except Exception:
+                                    try:
+                                        text = response.text()
+                                    except Exception:
+                                        return
+                                for p in _extract_prices(text):
+                                    if 200 < p < 80000:
+                                        captured_prices.append(p)
+                    except Exception:
+                        pass
 
-            # SynXis iframe 探测
-            if "be.synxis.com" in hotel.get("ibe_url", ""):
+                page.on("response", on_response)
+
+                url = hotel["booking_url"]
+                sep = "&" if "?" in url else "?"
+                full_url = f"{url}{sep}checkin={checkin}&checkout={checkout}&adults=2&rooms=1"
+
+                page.goto(full_url, timeout=28000, wait_until="domcontentloaded")
                 try:
-                    for frame in page.frames:
-                        if frame == page.main_frame:
-                            continue
-                        frame_url = frame.url or ""
-                        if "synxis" in frame_url or "ibe" in frame_url.lower():
-                            try:
-                                frame_html = frame.content()
-                                if len(frame_html) > 200:
-                                    page_prices.extend(_extract_prices(frame_html))
-                            except Exception:
-                                pass
-                except Exception:
-                    pass
+                    page.wait_for_load_state("networkidle", timeout=10000)
+                except PwTimeout:
+                    page.wait_for_timeout(5000)
 
-            all_prices = sorted(set(captured_prices + page_prices))
-            all_prices = [p for p in all_prices if 200 < p < 80000]
+                html = page.content()
+                page_prices = _extract_prices(html)
 
-            max_bookable, sold_out_detected = _probe_inventory(page, html)
-            if max_bookable is not None:
-                result["notes_inventory"] = f"max_bookable={max_bookable}"
-            if sold_out_detected:
-                result["avail_status"] = "sold_out"
-                result["notes_inventory"] = result.get("notes_inventory", "") + "|sold_out"
+                # SynXis iframe 探测
+                if "be.synxis.com" in hotel.get("ibe_url", ""):
+                    try:
+                        for frame in page.frames:
+                            if frame == page.main_frame:
+                                continue
+                            frame_url = frame.url or ""
+                            if "synxis" in frame_url or "ibe" in frame_url.lower():
+                                try:
+                                    frame_html = frame.content()
+                                    if len(frame_html) > 200:
+                                        page_prices.extend(_extract_prices(frame_html))
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
 
-            page.close()
+                all_prices = sorted(set(captured_prices + page_prices))
+                all_prices = [p for p in all_prices if 200 < p < 80000]
 
-            if all_prices:
-                avail = result.get("avail_status", "available")
-                if avail != "sold_out":
-                    avail = "low" if (max_bookable is not None and max_bookable <= 5) else "available"
-                result.update({
-                    "official_bar": all_prices[0],
-                    "official_rack": all_prices[-1] if len(all_prices) > 1 else None,
-                    "avail_status": avail,
-                    "source_ok": 1,
-                    "notes": f"playwright_js ({len(all_prices)}prices)"
-                              + (f" max={max_bookable}" if max_bookable else "")
-                })
-                return result
-            else:
-                if sold_out_detected or any(kw in html.lower() for kw in
-                        ["sold out", "已售罄", "unavailable", "no rooms", "sold_out"]):
+                max_bookable, sold_out_detected = _probe_inventory(page, html)
+                if max_bookable is not None:
+                    result["notes_inventory"] = f"max_bookable={max_bookable}"
+                if sold_out_detected:
                     result["avail_status"] = "sold_out"
-                result["notes"] = "playwright_no_price"
+                    result["notes_inventory"] = result.get("notes_inventory", "") + "|sold_out"
 
-        except PwTimeout:
-            result["notes"] = "playwright_timeout"
-        except Exception as e:
-            # 主页面加载失败（DNS/网络）→ 继续方法3b
-            result["notes"] = f"playwright_err:{str(e)[:60]}"
+                page.close()
+
+                if all_prices:
+                    avail = result.get("avail_status", "available")
+                    if avail != "sold_out":
+                        avail = "low" if (max_bookable is not None and max_bookable <= 5) else "available"
+                    result.update({
+                        "official_bar": all_prices[0],
+                        "official_rack": all_prices[-1] if len(all_prices) > 1 else None,
+                        "avail_status": avail,
+                        "source_ok": 1,
+                        "notes": f"playwright_js ({len(all_prices)}prices)"
+                                  + (f" max={max_bookable}" if max_bookable else "")
+                    })
+                    return result
+                else:
+                    if sold_out_detected or any(kw in html.lower() for kw in
+                            ["sold out", "已售罄", "unavailable", "no rooms", "sold_out"]):
+                        result["avail_status"] = "sold_out"
+                    result["notes"] = "playwright_no_price"
+
+            except PwTimeout:
+                result["notes"] = "playwright_timeout"
+            except Exception as e:
+                # 主页面加载失败（DNS/网络）→ 继续方法3b
+                result["notes"] = f"playwright_err:{str(e)[:60]}"
 
         # ── 方法3b：SynXis IBE 直连（独立异常处理，主页面失败也会执行）──
         # 覆盖场景：① 主页面DNS解析失败 ② 主页面无价格 ③ SynXis通过iframe加载
