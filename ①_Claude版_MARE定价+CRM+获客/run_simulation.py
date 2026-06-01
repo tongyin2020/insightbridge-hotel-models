@@ -37,10 +37,10 @@ import requests
 _REAL_DB_PATH = Path("/Users/tongyin/Desktop/InsightBridge_模型测试系统/hotel_collector/hotel_real_data.db")
 
 # ── 双层OTA折算系数（OTA价 × 此系数 ≈ 官网BAR）
-_OTA_TO_BAR_MASS    = 0.85   # 2-3-4★ 大众市场
+_OTA_TO_BAR_MASS    = 0.85   # 3-4★ 大众市场
 _OTA_TO_BAR_LUXURY  = 0.72   # 5★ 奢华市场
-_BAR_WEIGHT = {2: 0.55, 3: 0.55, 4: 0.55, 5: 0.70}   # 历史参考权重
-_OTA_WEIGHT = {2: 0.45, 3: 0.45, 4: 0.45, 5: 0.30}   # 实时OTA权重
+_BAR_WEIGHT = {3: 0.55, 4: 0.55, 5: 0.70}   # 历史参考权重
+_OTA_WEIGHT = {3: 0.45, 4: 0.45, 5: 0.30}   # 实时OTA权重
 
 # ── 声誉情感引擎 + DSEC数据（hotel_collector目录）────────────────────────────
 _COLLECTOR_DIR = Path("/Users/tongyin/Desktop/InsightBridge_模型测试系统/hotel_collector")
@@ -77,13 +77,13 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
       Step D — 库存紧张溢价（avail_level: critical/low/moderate）
 
     OTA权重按需求档位差异化（淡季不跟价格战，旺季锚定自身BAR）：
-      大众(2-4★): LOW=0.40 / NORMAL=0.50 / HIGH=0.25
+      大众(3-4★): LOW=0.40 / NORMAL=0.50 / HIGH=0.25
       豪华(5★):   LOW=0.15 / NORMAL=0.30 / HIGH=0.20
     """
     if month is None:
         month = datetime.now().month
 
-    tier = {2: "2_star", 3: "3_star", 4: "4_star", 5: "5_star"}.get(star, "3_star")
+    tier = {3: "3_star", 4: "4_star", 5: "5_star"}.get(star, "3_star")
     ratio = _OTA_TO_BAR_LUXURY if star == 5 else _OTA_TO_BAR_MASS
     ota_estimate = max(ota_snapshot_price * ratio, 100.0)
     # 静态基础权重（后续按需求档位覆盖）
@@ -138,7 +138,7 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
 
     # ── 需求档位差异化OTA权重（覆盖静态权重）────────────────────────────────
     # 淡季不跟随OTA价格战；旺季自身BAR主导，OTA权重反而降低
-    # 大众(2-4★): LOW→0.40, NORMAL→0.50, HIGH→0.25
+    # 大众(3-4★): LOW→0.40, NORMAL→0.50, HIGH→0.25
     # 豪华(5★):   LOW→0.15, NORMAL→0.30, HIGH→0.20
     _DEMAND_OTA_W = {
         ("mass",   "LOW"):    0.40, ("mass",   "NORMAL"): 0.40, ("mass",   "HIGH"): 0.25,
@@ -180,7 +180,7 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
         base = ota_estimate * 0.97
 
     # Step B：星级范围截断
-    clamp_ranges = {2: (200, 900), 3: (400, 1400), 4: (800, 3000), 5: (1500, 8000)}
+    clamp_ranges = {3: (400, 1400), 4: (800, 3000), 5: (1500, 8000)}
     lo, hi = clamp_ranges.get(star, (200, 8000))
     base = max(lo, min(hi, base))
 
@@ -506,8 +506,8 @@ def _push_metrics_snapshot(hour: int, avg_mare: float, avg_crm: float, avg_acq: 
         f"**定价推荐（当前小时）**\n"
         f"| 模型 | 均价 | 覆盖 |\n"
         f"|------|------|------|\n"
-        f"| MARE（3★） | MOP {avg_mare:.0f} | {len(HOTELS_23_STAR)}家真实 |\n"
-        f"| DirectorAI CRM（3★） | MOP {avg_crm:.0f} | {len(HOTELS_23_STAR)}家真实 |\n"
+        f"| MARE（3★） | MOP {avg_mare:.0f} | {len(HOTELS_3_STAR)}家真实 |\n"
+        f"| DirectorAI CRM（3★） | MOP {avg_crm:.0f} | {len(HOTELS_3_STAR)}家真实 |\n"
         f"| SelfACQ 直销（4-5★） | MOP {avg_acq:.0f} | {len(HOTELS_45_STAR)}家真实 |\n"
         f"{market_section}\n"
         f"状态：{status} | 进度：{hour+1}/504小时 ({(hour+1)/504*100:.0f}%)"
@@ -554,7 +554,7 @@ def _push_daily_summary(summary: dict):
         f"**{summary['date']}**\n\n"
         f"**模型定价（日均）**\n"
         f"| 模型 | 均价 |\n|------|------|\n"
-        f"| MARE（3★，{len(HOTELS_23_STAR)}家真实） | MOP {summary['avg_mare_price']} |\n"
+        f"| MARE（3★，{len(HOTELS_3_STAR)}家真实） | MOP {summary['avg_mare_price']} |\n"
         f"| DirectorAI CRM（3★） | MOP {summary['avg_crm_price']} |\n"
         f"| SelfACQ 直销（4-5★，{len(HOTELS_45_STAR)}家真实） | MOP {summary['avg_selfacq_offer']} |\n\n"
         f"**运行状态**\n"
@@ -583,7 +583,6 @@ from types import SimpleNamespace
 
 # ── 星级专属护栏配置（防止低/高端酒店因默认护栏MOP750-1015触发虚假违规）──────────
 _STAR_GUARDRAIL = {
-    2: SimpleNamespace(floor_price=280,  ceiling_price=900),
     3: SimpleNamespace(floor_price=420,  ceiling_price=1600),
     4: SimpleNamespace(floor_price=750,  ceiling_price=3500),
     5: SimpleNamespace(floor_price=1200, ceiling_price=8000),
@@ -603,32 +602,26 @@ PID_FILE = Path(__file__).parent / "simulation.pid"
 def _build_hotel_roster() -> tuple[list[dict], list[dict]]:
     """
     生成澳门全市酒店名单（固定随机种子，结果可复现）。
-    2-3星：145家；4-5星：280家。
+    3星：73家；4-5星：280家。
     """
     rng = random.Random(2026)
 
-    # ── 2-3星分布：(区域代码, 区域名, 星级, 数量, 最低价, 最高价, 最少房, 最多房)
-    spec_23 = [
-        ("NAPE",  "新口岸",   2, 22, 420, 660,  45, 150),
-        ("INNER", "内港",     2, 25, 370, 610,  40, 130),
-        ("FCK",   "筷子基",   2, 15, 390, 640,  40, 120),
-        ("AREIA", "黑沙环",   2, 10, 380, 620,  35, 110),
+    # ── 3星分布：(区域代码, 区域名, 星级, 数量, 最低价, 最高价, 最少房, 最多房)
+    spec_3 = [
         ("TAIPA", "氹仔",     3, 25, 580, 950,  80, 220),
         ("NAPE",  "新口岸",   3, 20, 620, 980,  90, 250),
         ("INNER", "内港",     3, 18, 560, 900,  75, 200),
         ("COT",   "路凼",     3, 10, 700, 1050, 100, 280),
-    ]  # 合计：22+25+15+10+25+20+18+10 = 145家
+    ]  # 合计：25+20+18+10 = 73家
 
-    types_2 = ["经济酒店", "商务旅馆", "宾馆", "旅社", "连锁快捷"]
     types_3 = ["精品酒店", "商务酒店", "城市酒店", "服务式公寓"]
 
-    hotels_23: list[dict] = []
-    for dc, dcn, star, count, plo, phi, rlo, rhi in spec_23:
-        tnames = types_2 if star == 2 else types_3
+    hotels_3: list[dict] = []
+    for dc, dcn, star, count, plo, phi, rlo, rhi in spec_3:
         for i in range(1, count + 1):
-            hotels_23.append({
+            hotels_3.append({
                 "hotel_id":   f"MAC_{star}S_{dc}_{i:03d}",
-                "name":       f"{dcn}{star}星{rng.choice(tnames)}{i:02d}",
+                "name":       f"{dcn}{star}星{rng.choice(types_3)}{i:02d}",
                 "base_price": float(round(rng.uniform(plo, phi) / 10) * 10),
                 "total_rooms": rng.randint(rlo, rhi),
                 "star":       star,
@@ -664,19 +657,19 @@ def _build_hotel_roster() -> tuple[list[dict], list[dict]]:
                 "district":   dc,
             })
 
-    return hotels_23, hotels_45
+    return hotels_3, hotels_45
 
 
 # ── 切换为澳门旅游局官方76家真实酒店 ─────────────────────────────────────────
 try:
     from hotel_roster_76 import HOTELS_3STAR, HOTELS_45STAR, ALL_HOTELS_76
-    HOTELS_23_STAR = HOTELS_3STAR          # 18家3★真实酒店
+    HOTELS_3_STAR  = HOTELS_3STAR          # 18家3★真实酒店
     HOTELS_45_STAR = HOTELS_45STAR         # 58家4-5★真实酒店
     ALL_HOTELS     = ALL_HOTELS_76         # 76家合计
 except ImportError:
     # 降级到原虚构名单（保底）
-    HOTELS_23_STAR, HOTELS_45_STAR = _build_hotel_roster()
-    ALL_HOTELS = HOTELS_23_STAR + HOTELS_45_STAR
+    HOTELS_3_STAR,  HOTELS_45_STAR = _build_hotel_roster()
+    ALL_HOTELS = HOTELS_3_STAR + HOTELS_45_STAR
 
 # 2026年澳门公众假期（影响border_flow和holiday因子）
 MACAU_HOLIDAYS_2026 = {
@@ -837,8 +830,8 @@ def _jitter(base: float, noise: float) -> float:
     return max(-1.0, min(1.0, base + random.gauss(0, noise)))
 
 
-# ── 2-3星定价模型测试（MARE）────────────────────────────────────────────────
-def run_23star_test(hotel: dict, signal: dict, real_data: dict,
+# ── 3星定价模型测试（MARE）────────────────────────────────────────────────
+def run_3star_test(hotel: dict, signal: dict, real_data: dict,
                     scenario: HotelScenario) -> dict:
     """
     MARE 房价优化模型测试。
@@ -849,7 +842,7 @@ def run_23star_test(hotel: dict, signal: dict, real_data: dict,
     occupancy = scenario.occupancy
 
     # 竞对价格：Booking.com实时价格 × 场景调整系数
-    real_prices = real_data.get("booking_prices_23", [])
+    real_prices = real_data.get("booking_prices_3", [])
     if real_prices:
         base_comp = float(sum(real_prices) / len(real_prices))
         competitor_price = max(200.0, base_comp * scenario.competitor_price_multiplier
@@ -864,7 +857,7 @@ def run_23star_test(hotel: dict, signal: dict, real_data: dict,
 
     req = RecommendationRequest(
         hotel_id=hotel["hotel_id"],
-        hotel_star=hotel.get("star", 3),   # 竞对权重差异化：2-4★ vs 5★
+        hotel_star=hotel.get("star", 3),   # 竞对权重差异化：3-4★ vs 5★
         season=signal["season"],
         base_price=hotel["base_price"],
         # 外部实时信号
@@ -990,11 +983,11 @@ def run_45star_test(hotel: dict, signal: dict, real_data: dict,
     }
 
 
-# ── DirectorAI CRM集成模型测试（2-3星）────────────────────────────────────────
+# ── DirectorAI CRM集成模型测试（3星）────────────────────────────────────────
 def run_director_crm_test(hotel: dict, signal: dict, real_data: dict,
                           scenario: HotelScenario) -> dict:
     """
-    测试DirectorAI CRM/PSRS集成模型在2-3星酒店的表现。
+    测试DirectorAI CRM/PSRS集成模型在3星酒店的表现。
     内部数据（渠道分布/PSRS状态/CRM识别率/客户忠诚度）来自scenario，
     覆盖"数据缺失"到"系统故障"到"理想状态"的全谱运营条件。
     """
@@ -1092,7 +1085,7 @@ def run_director_crm_test(hotel: dict, signal: dict, real_data: dict,
 def detect_anomalies(hotel: dict, result: dict, signal: dict, model_type: str) -> list[str]:
     anomalies = []
 
-    if model_type == "MARE_23_STAR":
+    if model_type == "MARE_3_STAR":
         rec_price = result.get("recommended_price", 0)
         base = hotel["base_price"]
 
@@ -1103,18 +1096,15 @@ def detect_anomalies(hotel: dict, result: dict, signal: dict, model_type: str) -
         if rec_price < base * 0.5:
             anomalies.append(f"WARN: 价格异常低 MOP {rec_price} (<{base*0.5:.0f} = 0.5x基础价)")
 
-        # 检查五星级价格是否低于二星级（应不可能，但做保险检查）
-        if rec_price < 300:
-            anomalies.append(f"WARN: 价格低于澳门市场底线 MOP {rec_price}")
-        if rec_price > 3000 and "2S" in hotel["hotel_id"]:
-            anomalies.append(f"CRITICAL: 二星价格超越五星上限 MOP {rec_price}")
+        if rec_price < 350:
+            anomalies.append(f"WARN: 价格低于3★市场底线 MOP {rec_price}")
 
         # Guardrail违规
         violations = result.get("guardrail_report", {}).get("violations", [])
         if violations:
             anomalies.append(f"GUARDRAIL: {len(violations)}项规则违反: {[v.get('rule','?') for v in violations[:3]]}")
 
-    elif model_type == "DIRECTOR_CRM_23_STAR":
+    elif model_type == "DIRECTOR_CRM_3_STAR":
         if result.get("psrs_status") == "error":
             anomalies.append("CRITICAL: PSRS系统同步失败—预订数据未入库")
         if result.get("integration_score", 1.0) < 0.25:
@@ -1146,11 +1136,11 @@ def write_daily_summary(conn: sqlite3.Connection, day: int):
 
     c = conn.cursor()
     rows_mare = c.execute(
-        "SELECT rec_price FROM hourly_runs WHERE model_type IN ('MARE_23_STAR','MARE_ALL') AND sim_hour BETWEEN ? AND ?",
+        "SELECT rec_price FROM hourly_runs WHERE model_type IN ('MARE_3_STAR','MARE_ALL') AND sim_hour BETWEEN ? AND ?",
         (start_hour, end_hour - 1),
     ).fetchall()
     rows_crm = c.execute(
-        "SELECT rec_price FROM hourly_runs WHERE model_type IN ('DIRECTOR_CRM_23_STAR','DIRECTOR_CRM_ALL') AND sim_hour BETWEEN ? AND ?",
+        "SELECT rec_price FROM hourly_runs WHERE model_type IN ('DIRECTOR_CRM_3_STAR','DIRECTOR_CRM_ALL') AND sim_hour BETWEEN ? AND ?",
         (start_hour, end_hour - 1),
     ).fetchall()
     rows_acq = c.execute(
@@ -1178,7 +1168,7 @@ def write_daily_summary(conn: sqlite3.Connection, day: int):
         "avg_mare_price":         round(avg_mare, 1),
         "avg_crm_price":          round(avg_crm, 1),
         "avg_selfacq_offer":      round(avg_acq, 1),
-        "hotels_23star":          len(HOTELS_23_STAR),
+        "hotels_3star":           len(HOTELS_3_STAR),
         "hotels_45star":          len(HOTELS_45_STAR),
         "health":                 "OK" if anomaly_count == 0 else f"{anomaly_count} issues",
     }
@@ -1195,9 +1185,9 @@ def write_daily_summary(conn: sqlite3.Connection, day: int):
 def main():
     print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] 澳门酒店AI模型模拟测试启动")
     print(f"  目标：{TOTAL_HOURS}小时 ({TOTAL_HOURS // 24}天)")
-    print(f"  3★酒店（澳门旅游局官方）：{len(HOTELS_23_STAR)}家 (每小时MARE+CRM各{len(HOTELS_23_STAR)}次)")
+    print(f"  3★酒店（澳门旅游局官方）：{len(HOTELS_3_STAR)}家 (每小时MARE+CRM各{len(HOTELS_3_STAR)}次)")
     print(f"  4-5★酒店（澳门旅游局官方）：{len(HOTELS_45_STAR)}家 (每小时自主获客{len(HOTELS_45_STAR)}次)")
-    total_calls = (len(HOTELS_23_STAR) * 2 + len(HOTELS_45_STAR)) * TOTAL_HOURS
+    total_calls = (len(HOTELS_3_STAR) * 2 + len(HOTELS_45_STAR)) * TOTAL_HOURS
     print(f"  21天总调用次数：{total_calls:,}次")
     print(get_scenario_stats())
     print(f"  结果数据库：{DB_PATH}")
@@ -1267,8 +1257,8 @@ def main():
         # ── 动态base_price：真实BAR/OTA + DSEC背景，MakCorps已停用 ───────────
         cur_month = run_start.month
         # 从real_data获取市场OTA参考价（作为实时OTA输入）
-        _ota_ref_23 = float(sum(real_data["booking_prices_23"]) / len(real_data["booking_prices_23"])) \
-            if real_data.get("booking_prices_23") else 1000.0
+        _ota_ref_3 = float(sum(real_data["booking_prices_3"]) / len(real_data["booking_prices_3"])) \
+            if real_data.get("booking_prices_3") else 1000.0
         _ota_ref_45 = float(real_data["upper_tier_adr_real"]) \
             if real_data.get("upper_tier_adr_real") else 2000.0
 
@@ -1276,19 +1266,19 @@ def main():
         for h_idx, hotel in enumerate(ALL_HOTELS):
             scenario = get_scenario(h_idx, hour)
             # 每小时动态计算base_price（替代固定随机数）
-            _ota_in = _ota_ref_45 if hotel["star"] >= 4 else _ota_ref_23
+            _ota_in = _ota_ref_45 if hotel["star"] >= 4 else _ota_ref_3
             hotel = dict(hotel)  # 浅拷贝，不修改原始列表
             hotel["base_price"] = compute_dynamic_base_price(
                 hotel["hotel_id"], hotel["star"], _ota_in, cur_month
             )
-            # 4-5星酒店用高端竞对价格（upper_tier_adr）替代2-3星基准
+            # 4-5星酒店用高端竞对价格（upper_tier_adr）替代3星基准
             if hotel["star"] >= 4 and real_data.get("upper_tier_adr_real"):
                 rd = dict(real_data)
-                rd["booking_prices_23"] = [real_data["upper_tier_adr_real"]]
+                rd["booking_prices_3"] = [real_data["upper_tier_adr_real"]]
             else:
                 rd = real_data
             try:
-                result = run_23star_test(hotel, signal, rd, scenario)
+                result = run_3star_test(hotel, signal, rd, scenario)
                 anomalies = detect_anomalies(hotel, result, signal, "MARE_ALL")
                 rec_price = result.get("recommended_price", 0)
                 _insert("MARE_ALL", hotel,
@@ -1311,7 +1301,7 @@ def main():
         # ── 模型2：DirectorAI CRM/PSRS集成（全部425家 × 14场景）────────
         for h_idx, hotel in enumerate(ALL_HOTELS):
             scenario = get_scenario(h_idx, hour)
-            _ota_in = _ota_ref_45 if hotel["star"] >= 4 else _ota_ref_23
+            _ota_in = _ota_ref_45 if hotel["star"] >= 4 else _ota_ref_3
             hotel = dict(hotel)
             hotel["base_price"] = compute_dynamic_base_price(
                 hotel["hotel_id"], hotel["star"], _ota_in, cur_month
@@ -1347,7 +1337,7 @@ def main():
         # ── 模型3：自主获客/OTA脱依赖（全部425家 × 14场景）──────────────
         for h_idx, hotel in enumerate(ALL_HOTELS):
             scenario = get_scenario(h_idx, hour)
-            _ota_in = _ota_ref_45 if hotel["star"] >= 4 else _ota_ref_23
+            _ota_in = _ota_ref_45 if hotel["star"] >= 4 else _ota_ref_3
             hotel = dict(hotel)
             hotel["base_price"] = compute_dynamic_base_price(
                 hotel["hotel_id"], hotel["star"], _ota_in, cur_month
@@ -1422,8 +1412,8 @@ def main():
             print(f"\n{'='*72}")
             print(f"  第 {day_num+1:02d} 天日报  {summary['date']}")
             print(f"  运行次数: {summary['runs']:,}  |  异常: {summary['anomalies']}  |  状态: {summary['health']}")
-            print(f"  MARE房价优化   (145家2-3星): 均价 MOP {summary['avg_mare_price']}")
-            print(f"  DirectorAI CRM (145家2-3星): CRM调价 MOP {summary['avg_crm_price']}")
+            print(f"  MARE房价优化   (73家3星): 均价 MOP {summary['avg_mare_price']}")
+            print(f"  DirectorAI CRM (73家3星): CRM调价 MOP {summary['avg_crm_price']}")
             print(f"  自主获客       (280家4-5星): 直销价 MOP {summary['avg_selfacq_offer']}")
             print(f"{'='*72}\n")
             # 每日汇总推送企业微信（后台，不阻塞）
@@ -1442,14 +1432,14 @@ def main():
     print()
     c = conn.cursor()
     total = c.execute("SELECT COUNT(*) FROM hourly_runs").fetchone()[0]
-    mare_n = c.execute("SELECT COUNT(*) FROM hourly_runs WHERE model_type IN ('MARE_23_STAR','MARE_ALL')").fetchone()[0]
-    crm_n  = c.execute("SELECT COUNT(*) FROM hourly_runs WHERE model_type IN ('DIRECTOR_CRM_23_STAR','DIRECTOR_CRM_ALL')").fetchone()[0]
+    mare_n = c.execute("SELECT COUNT(*) FROM hourly_runs WHERE model_type IN ('MARE_3_STAR','MARE_ALL')").fetchone()[0]
+    crm_n  = c.execute("SELECT COUNT(*) FROM hourly_runs WHERE model_type IN ('DIRECTOR_CRM_3_STAR','DIRECTOR_CRM_ALL')").fetchone()[0]
     acq_n  = c.execute("SELECT COUNT(*) FROM hourly_runs WHERE model_type IN ('SELFACQ_45_STAR','SELFACQ_ALL')").fetchone()[0]
     errors = c.execute("SELECT COUNT(*) FROM hourly_runs WHERE anomaly LIKE '%CRITICAL%'").fetchone()[0]
     warns  = c.execute("SELECT COUNT(*) FROM hourly_runs WHERE anomaly LIKE '%WARN%'").fetchone()[0]
     print(f"  总运行次数: {total:,}")
-    print(f"    ├ MARE房价优化      (2-3星): {mare_n:,}次")
-    print(f"    ├ DirectorAI CRM   (2-3星): {crm_n:,}次")
+    print(f"    ├ MARE房价优化      (3星): {mare_n:,}次")
+    print(f"    ├ DirectorAI CRM   (3星): {crm_n:,}次")
     print(f"    └ 自主获客OTA脱依赖 (4-5星): {acq_n:,}次")
     print(f"  严重异常(CRITICAL): {errors}")
     print(f"  警告(WARN): {warns}")
@@ -1466,7 +1456,7 @@ def main():
         f"**完成时间：** {datetime.now():%Y-%m-%d %H:%M}\n\n"
         f"| 项目 | 数量 |\n|------|------|\n"
         f"| 总运行次数 | {total:,} |\n"
-        f"| MARE（2-3星） | {mare_n:,} |\n"
+        f"| MARE（3星） | {mare_n:,} |\n"
         f"| DirectorAI CRM | {crm_n:,} |\n"
         f"| 自主获客（4-5星） | {acq_n:,} |\n"
         f"| CRITICAL 异常 | {errors} |\n"

@@ -1,4 +1,4 @@
-"""MARE v19.1 Pricing Engine, adjusted for Macau 2-3 star hotels.
+"""MARE v19.1 Pricing Engine, adjusted for Macau 3-5 star hotels.
 
 This working copy folds in the pre-launch corrections identified in audit:
 1. Re-center priors on Macau midscale hotels rather than mixed-city demo logic.
@@ -23,7 +23,7 @@ DEFAULT_WEIGHTS = {
         "peak": 1.08,
         "super_peak": 1.15,
     },
-    # Macau 2-3 star prior:
+    # Macau 3-star and above prior:
     # border / road traffic, weekend, competitor pressure and booking pace matter
     # more than high-end event monetisation or weather noise.
     "demand_weights": {
@@ -153,7 +153,7 @@ def crm_adjustment(
     churn_risk: float = 0.0,
     loyalty_tier: str = "",
 ) -> tuple[float, str]:
-    # In the Macau 2-3 star market, CRM should protect relationships lightly,
+    # In the Macau 3-star and above market, CRM should protect relationships lightly,
     # not dominate price formation.
     adjustment = 0.0
     reasons: list[str] = []
@@ -462,7 +462,7 @@ def recommend(data, hotel_settings=None):
 
     recommendation_log = {
         "hotel_id": data.hotel_id,
-        "market_segment": "macau_2_3_star",
+        "market_segment": "macau_3star_plus",
         "season": data.season,
         "base_price": data.base_price,
         "demand_score": score,
@@ -486,14 +486,14 @@ def recommend(data, hotel_settings=None):
 
     return {
         "hotel_id": data.hotel_id,
-        "market_segment": "macau_2_3_star",
+        "market_segment": "macau_3star_plus",
         "season": data.season,
         "demand_score": score,
         "demand_state": state,
         "recommended_price": final_price,
         "expected_revenue_lift": expected_lift(state, current_occupancy, data.season),
         "confidence": confidence(score, current_occupancy),
-        "summary": f"Recommended price is MOP {final_price}, optimized for Macau 2-3 star revenue management.",
+        "summary": f"Recommended price is MOP {final_price}, optimized for Macau 3-star and above revenue management.",
         "meta": (
             f"Seasonal base MOP {seasonal_base:.0f} -> raw MOP {raw_price:.0f} "
             f"-> fair MOP {fair_price:.0f} -> final MOP {final_price}"

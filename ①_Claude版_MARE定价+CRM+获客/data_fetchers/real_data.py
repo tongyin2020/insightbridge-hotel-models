@@ -4,7 +4,7 @@
 经过实际测试，以下数据源可成功抓取：
 
 ✅ 可以抓取（真实数据）:
-  - Booking.com 2-3星房价 / 竞对价格     (Playwright, Cloudflare可绕过)
+  - Booking.com 3星房价 / 竞对价格     (Playwright, Cloudflare可绕过)
   - Booking.com 4-5星房价 (upper_tier_adr) (Playwright)
   - TurboJET渡轮满座率 → flight_ferry信号  (requests, 无防护)
   - 澳门天气                              (wttr.in, 已实现)
@@ -216,12 +216,12 @@ def fetch_booking_prices(checkin: str, checkout: str) -> dict:
 
     返回:
     {
-        "prices_23star": [550, 945, ...],   # MOP, 2-3星
+        "prices_3star": [550, 945, ...],   # MOP, 3星
         "prices_45star": [1200, 1800, ...], # MOP, 4-5星
-        "count_23star": 14,                  # 可售房源数量
-        "avg_23star": 748.0,                 # 均价
+        "count_3star": 14,                  # 可售房源数量
+        "avg_3star": 748.0,                 # 均价
         "avg_45star": 1450.0,                # 上层均价
-        "min_23star": 550,                   # 最低价（竞对压力）
+        "min_3star": 550,                   # 最低价（竞对压力）
         "source": "booking.com",
         "fetched_at": "2026-05-05 16:00:00"
     }
@@ -261,19 +261,19 @@ def fetch_booking_prices(checkin: str, checkout: str) -> dict:
                 raw = re.findall(r"MOP[\s\xa0]*([\d,]+)", html)
                 return sorted(set(int(p.replace(",", "")) for p in raw if min_price < int(p.replace(",", "")) < max_price))
 
-            # 2-3星（selected_currency=MOP 确保返回澳门元）
+            # 3星（selected_currency=MOP 确保返回澳门元）
             url_23 = (
                 f"https://www.booking.com/searchresults.html?ss=Macau"
                 f"&checkin={checkin}&checkout={checkout}"
-                f"&nflt=class%3D2%3Bclass%3D3&lang=zh-hk&selected_currency=MOP"
+                f"&nflt=class%3D3&lang=zh-hk&selected_currency=MOP"
             )
             page.goto(url_23, wait_until="domcontentloaded", timeout=30000)
             page.wait_for_timeout(4000)
             html_23 = page.content()
 
-            prices_23 = _parse_mop_prices(html_23, 100, 3000)
+            prices_3 = _parse_mop_prices(html_23, 100, 3000)
             count_match = re.findall(r"(\d+)\s*(?:properties?|酒店)\s*found", html_23, re.I)
-            count_23 = int(count_match[0]) if count_match else len(prices_23)
+            count_3 = int(count_match[0]) if count_match else len(prices_3)
 
             # 4-5星（用于upper_tier_adr）
             url_45 = (
@@ -289,26 +289,26 @@ def fetch_booking_prices(checkin: str, checkout: str) -> dict:
             browser.close()
 
         result = {
-            "prices_23star": prices_23,
+            "prices_3star": prices_3,
             "prices_45star": prices_45,
-            "count_23star": count_23,
-            "avg_23star": round(sum(prices_23) / len(prices_23), 1) if prices_23 else 0,
+            "count_3star": count_3,
+            "avg_3star": round(sum(prices_3) / len(prices_3), 1) if prices_3 else 0,
             "avg_45star": round(sum(prices_45) / len(prices_45), 1) if prices_45 else 0,
-            "min_23star": min(prices_23) if prices_23 else 0,
-            "max_23star": max(prices_23) if prices_23 else 0,
+            "min_3star": min(prices_3) if prices_3 else 0,
+            "max_3star": max(prices_3) if prices_3 else 0,
             "source": "booking.com",
             "fetched_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
         _set_cache(cache_key, result)
-        logger.info(f"Booking.com: 2-3star prices={prices_23}, 4-5star avg=MOP{result['avg_45star']:.0f}")
+        logger.info(f"Booking.com: 3star prices={prices_3}, 4-5star avg=MOP{result['avg_45star']:.0f}")
         return result
 
     except Exception as e:
         logger.warning(f"Booking.com scrape failed: {e}")
         return {
-            "prices_23star": [], "prices_45star": [],
-            "count_23star": 0, "avg_23star": 0, "avg_45star": 0,
-            "min_23star": 0, "max_23star": 0,
+            "prices_3star": [], "prices_45star": [],
+            "count_3star": 0, "avg_3star": 0, "avg_45star": 0,
+            "min_3star": 0, "max_3star": 0,
             "source": "booking.com_failed",
             "fetched_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
@@ -451,14 +451,14 @@ def get_all_real_signals(checkin: str, checkout: str) -> dict:
 
     # ── 信号转换：Booking.com价格 → 竞对信号 ────────────────────────────
     # competitor_price: 直接给数字 (MOP)，模型会处理
-    avg_competitor = booking["avg_23star"] or 750.0
-    min_competitor = booking["min_23star"] or 600.0
+    avg_competitor = booking["avg_3star"] or 750.0
+    min_competitor = booking["min_3star"] or 600.0
     upper_tier_adr = booking["avg_45star"] or 1500.0
 
     # competitor_availability: 越多空房 = 越高值
-    count_23 = booking["count_23star"] or 10
-    # 澳门2-3星约30家酒店，14家有空房 = 正常
-    availability_ratio = min(1.0, count_23 / 25.0)
+    count_3 = booking["count_3star"] or 10
+    # 澳门3星约30家酒店，14家有空房 = 正常
+    availability_ratio = min(1.0, count_3 / 25.0)
 
     # weather_signal: 高温或恶劣天气为负
     if weather_c > 33:
@@ -481,7 +481,7 @@ def get_all_real_signals(checkin: str, checkout: str) -> dict:
         "competitor_price_min": min_competitor,
         "competitor_availability_real": availability_ratio,
         "upper_tier_adr_real": upper_tier_adr,
-        "booking_prices_23": booking["prices_23star"],
+        "booking_prices_3": booking["prices_3star"],
         "booking_prices_45": booking["prices_45star"],
 
         # ── MakCorps真实OTA预订节奏 ──────────────────────────────────

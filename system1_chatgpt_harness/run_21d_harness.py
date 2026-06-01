@@ -108,9 +108,18 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
                                 tier: str = None) -> float:
     """
     动态计算 base_price（含声誉情感修正）：
-      Step A — 历史BAR(60%) + OTA推算(40%)，冷启动时 OTA×0.97
+      Step A — 历史参考价（四层优先级）：
+               层1 Shifter真实BAR(85%) + DSEC(15%) → 混合OTA权重
+               层2 Shifter OTA折算BAR(85%) + DSEC(15%) → 混合OTA权重
+               层3 冷启动：DSEC统计局(100%)
+               层4 完全冷启动兜底：OTA估算×0.97
       Step B — 星级范围截断
       Step C — 声誉情感修正：base × (1 + rep_adj)，其中 rep_adj ∈ [-0.17, +0.17]
+      Step D — 库存紧张溢价（avail_level: critical/low/moderate）
+
+    OTA权重按需求档位差异化（淡季不跟价格战，旺季锚定自身BAR）：
+      大众(2-4★): LOW=0.40 / NORMAL=0.50 / HIGH=0.25
+      豪华(5★):   LOW=0.15 / NORMAL=0.30 / HIGH=0.20
 
     Args:
         hotel_id: 酒店ID（MAC_5DX_WYNN_001 格式）
@@ -124,14 +133,14 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
 
     # ── 推导 tier ─────────────────────────────────────────────────────────
     if tier is None:
-        tier = {2: "2_star", 3: "3_star", 4: "4_star", 5: "5_star"}.get(star, "3_star")
+        tier = {3: "3_star", 4: "4_star", 5: "5_star"}.get(star, "3_star")
 
     # ── 星级差异化OTA折算系数 ────────────────────────────────────────────
     ratio = _ota_to_bar_ratio(star)
     ota_estimate = ota_snapshot_price * ratio
     ota_estimate = max(ota_estimate, 100.0)   # 保底
 
-    # ── 星级差异化历史/OTA混合权重 ────────────────────────────────────────
+    # ── 静态基础权重（后续按需求档位覆盖）────────────────────────────────
     w_bar = BAR_WEIGHT.get(star, 0.55)   # 历史BAR权重
     w_ota = OTA_WEIGHT.get(star, 0.45)   # OTA推算权重
 
@@ -144,7 +153,7 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
         try:
             shared_conn = sqlite3.connect(str(REAL_DB_PATH), timeout=5)
 
-            # ── 优先：Shifter采集的真实官网BAR（最近7天快照，同月份入住日期）
+            # ── 层1：Shifter采集的真实官网BAR（最近7天快照，同月份入住日期）
             row = shared_conn.execute("""
                 SELECT AVG(official_bar), COUNT(*)
                 FROM price_snapshots
@@ -157,7 +166,7 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
             if row and row[1] and row[1] >= 1:
                 real_bar_avg = float(row[0])
 
-            # ── 备用：Booking.com OTA竞对价（最近7天）
+            # ── 层2备用：Booking.com OTA竞对价（最近7天）
             row_ota = shared_conn.execute("""
                 SELECT AVG(booking_rate), COUNT(*)
                 FROM price_snapshots
@@ -181,25 +190,47 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
         except Exception:
             pass
 
-    # ── 三层优先级定价参考 ────────────────────────────────────────────────
-    # 层1：真实官网BAR（最权威）— Shifter采集的hotel_real_data.db
-    # 层2：真实OTA价（折算BAR）— Booking.com价格×折算系数
-    # 层3：DSEC统计局历史均价（纯市场参考）
-    if real_bar_avg is not None:
-        historical_ref = (0.85 * real_bar_avg + 0.15 * dsec_adr_ref
-                          if dsec_adr_ref > 0 else real_bar_avg)
-    elif real_ota_avg is not None:
-        ota_bar_est = real_ota_avg * ratio
-        historical_ref = (0.85 * ota_bar_est + 0.15 * dsec_adr_ref
-                          if dsec_adr_ref > 0 else ota_bar_est)
-    elif dsec_adr_ref > 0:
-        historical_ref = dsec_adr_ref
-    else:
-        historical_ref = None
+    # ── 需求档位差异化OTA权重（覆盖静态权重）────────────────────────────────
+    # 淡季不跟随OTA价格战；旺季自身BAR主导，OTA权重反而降低
+    # 大众(2-4★): LOW→0.40, NORMAL→0.50, HIGH→0.25
+    # 豪华(5★):   LOW→0.15, NORMAL→0.30, HIGH→0.20
+    _DEMAND_OTA_W = {
+        ("mass",   "LOW"):    0.40, ("mass",   "NORMAL"): 0.40, ("mass",   "HIGH"): 0.25,
+        ("luxury", "LOW"):    0.15, ("luxury", "NORMAL"): 0.30, ("luxury", "HIGH"): 0.20,
+    }
+    demand_level = "NORMAL"
+    if _DSEC_OK and shared_conn:
+        try:
+            from dsec_loader import get_dsec_demand_signal as _dsec_sig
+            sig = _dsec_sig(month, star, shared_conn)   # [-1, +1]
+            demand_level = "HIGH" if sig > 0.15 else ("LOW" if sig < -0.15 else "NORMAL")
+        except Exception:
+            pass
+    seg = "luxury" if star >= 5 else "mass"
+    w_ota = _DEMAND_OTA_W.get((seg, demand_level), w_ota)
+    w_bar = 1.0 - w_ota
 
-    if historical_ref is not None:
+    # ── 四层优先级定价参考（MakCorps已停用）────────────────────────────────
+    # 层1：Shifter真实官网BAR → 85%BAR + 15%DSEC背景，再与OTA权重混合
+    # 层2：Shifter真实OTA价折算BAR → 85%折算BAR + 15%DSEC，再与OTA权重混合
+    # 层3：冷启动 — DSEC统计局100%作为唯一历史参考（MakCorps已停用，不再混合fallback）
+    # 层4：完全冷启动兜底（无任何真实数据）
+    if real_bar_avg is not None:
+        # 层1：有Shifter真实BAR — 85%真实BAR + 15%DSEC市场背景
+        historical_ref = (0.75 * real_bar_avg + 0.25 * dsec_adr_ref
+                          if dsec_adr_ref > 0 else real_bar_avg)
         base = w_bar * historical_ref + w_ota * ota_estimate
+    elif real_ota_avg is not None:
+        # 层2：有Shifter OTA价 — 折算BAR：85%折算BAR + 15%DSEC
+        ota_bar_est = real_ota_avg * ratio
+        historical_ref = (0.75 * ota_bar_est + 0.25 * dsec_adr_ref
+                          if dsec_adr_ref > 0 else ota_bar_est)
+        base = w_bar * historical_ref + w_ota * ota_estimate
+    elif dsec_adr_ref > 0:
+        # 层3：冷启动 — DSEC统计局为唯一历史参考，不与MakCorps fallback混合
+        base = dsec_adr_ref
     else:
+        # 层4：完全冷启动兜底（无真实数据）
         base = ota_estimate * 0.97
 
     # ── Step B：星级范围截断 ───────────────────────────────────────────────
@@ -235,10 +266,12 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
                 ORDER BY captured_at DESC LIMIT 1
             """, (hotel_id,)).fetchone()
             if today_inv:
-                if today_inv[0] == "low":
-                    inv_adj = 0.07    # 仅剩1-3间：需求溢价+7%
-                elif today_inv[0] == "medium":
-                    inv_adj = 0.03    # 剩4-7间：温和溢价+3%
+                if today_inv[0] == "critical":
+                    inv_adj = 0.12    # 仅剩1-2间：需求溢价+12%
+                elif today_inv[0] == "low":
+                    inv_adj = 0.07    # 剩3-9间：需求溢价+7%
+                elif today_inv[0] == "moderate":
+                    inv_adj = 0.03    # 剩10-19间：温和溢价+3%
         except Exception:
             pass
 
@@ -738,9 +771,7 @@ def main() -> int:
         # 降级：保留原虚构名单（仅当hotel_roster_76导入失败时）
         import random as _rnd
         _rng = _rnd.Random(2026)
-        _spec_23 = [
-            ("NAPE","新口岸",2,22,420,660,45,150),("INNER","内港",2,25,370,610,40,130),
-            ("FCK","筷子基",2,15,390,640,40,120),("AREIA","黑沙环",2,10,380,620,35,110),
+        _spec_3 = [
             ("TAIPA","氹仔",3,25,580,950,80,220),("NAPE","新口岸",3,20,620,980,90,250),
             ("INNER","内港",3,18,560,900,75,200),("COT","路凼",3,10,700,1050,100,280),
         ]
@@ -752,7 +783,7 @@ def main() -> int:
             ("COL","路环",5,5,2000,4000,100,300),
         ]
         ALL_HOTELS_GPT = []
-        for dc,dcn,star,cnt,plo,phi,rlo,rhi in _spec_23 + _spec_45:
+        for dc,dcn,star,cnt,plo,phi,rlo,rhi in _spec_3 + _spec_45:
             for i in range(1, cnt+1):
                 ALL_HOTELS_GPT.append({
                     "hotel_id": f"MAC_{star}S_{dc}_{i:03d}",
@@ -783,7 +814,7 @@ def main() -> int:
             # 动态计算 base_price：历史BAR(60%) + OTA推算(40%) + 声誉修正
             # 有真实数据时自动切换，冷启动时用OTA估算；声誉冷启动时 rep_adj=0
             ota_ref = snapshot.competitor_price if hotel["star"] <= 3 else snapshot.upper_tier_adr
-            _tier = {2: "2_star", 3: "3_star", 4: "4_star", 5: "5_star"}.get(hotel["star"], "3_star")
+            _tier = {3: "3_star", 4: "4_star", 5: "5_star"}.get(hotel["star"], "3_star")
             base = compute_dynamic_base_price(
                 hotel_id=hotel["hotel_id"],
                 star=hotel["star"],
@@ -822,7 +853,7 @@ def main() -> int:
         # ── Director：对全部425家酒店 × 所有场景 ────────────────────────
         for hotel in ALL_HOTELS_GPT:
             ota_ref = snapshot.competitor_price if hotel["star"] <= 3 else snapshot.upper_tier_adr
-            _tier = {2: "2_star", 3: "3_star", 4: "4_star", 5: "5_star"}.get(hotel["star"], "3_star")
+            _tier = {3: "3_star", 4: "4_star", 5: "5_star"}.get(hotel["star"], "3_star")
             base = compute_dynamic_base_price(
                 hotel_id=hotel["hotel_id"],
                 star=hotel["star"],
@@ -870,11 +901,11 @@ def main() -> int:
             }
             _real_data = {
                 "upper_tier_adr_real": snapshot.upper_tier_adr or 0.0,
-                "booking_prices_23": [],
+                "booking_prices_3": [],
             }
             for hotel in ALL_HOTELS_GPT:
                 ota_ref = snapshot.competitor_price if hotel["star"] <= 3 else snapshot.upper_tier_adr
-                _tier = {2: "2_star", 3: "3_star", 4: "4_star", 5: "5_star"}.get(hotel["star"], "3_star")
+                _tier = {3: "3_star", 4: "4_star", 5: "5_star"}.get(hotel["star"], "3_star")
                 base = compute_dynamic_base_price(
                     hotel_id=hotel["hotel_id"],
                     star=hotel["star"],

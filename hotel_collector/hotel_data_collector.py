@@ -2223,9 +2223,9 @@ def save_snapshot(conn: sqlite3.Connection, hotel: dict, checkin: str,
 
     # ── 星级最低价格校验（拒绝明显错误的抓取价格）───────────────────────────────
     # 原因：部分酒店静态页面含积分/面积/楼层等3-4位数字被误识为房价
-    _STAR_MIN_VALID_BAR = {2: 200, 3: 350, 4: 650, 5: 900}
+    _STAR_MIN_VALID_BAR = {3: 350, 4: 650, 5: 900}
     star = hotel.get("star", 3)
-    min_valid = _STAR_MIN_VALID_BAR.get(star, 200)
+    min_valid = _STAR_MIN_VALID_BAR.get(star, 350)
     if bar is not None and bar < min_valid:
         import logging as _log
         _log.warning(f"[save_snapshot] {hotel['id']} {star}★ BAR={bar} < min {min_valid}，疑似抓取错误，已丢弃")
