@@ -1116,7 +1116,7 @@ def run_director_crm_test(hotel: dict, signal: dict, real_data: dict,
         3,
     )
 
-    return {
+    result = {
         "hotel_id":             hotel["hotel_id"],
         "scenario":             scenario.name,
         "channel":              channel,
@@ -1136,6 +1136,29 @@ def run_director_crm_test(hotel: dict, signal: dict, real_data: dict,
         "occupancy":            occupancy,
         "demand_high":          signal["is_holiday"] or signal["is_weekend"],
     }
+
+    # ── Phase 2：弹性引擎验证 CRM 调价的 RevPAR 合理性 ───────────────────────
+    if _ELASTICITY_OK and crm_adjusted_price > 0:
+        mkt_price = hotel["base_price"]   # CRM以base_price为锚
+        er = _elasticity_optimize(
+            candidate_price = crm_adjusted_price,
+            market_price    = mkt_price,
+            star            = hotel.get("star", 3),
+            district        = hotel.get("district", "NAPE"),
+            demand_level    = "HIGH" if result["demand_high"] else "NORMAL",
+            season          = signal.get("season", "normal"),
+            hotel_id        = hotel.get("hotel_id"),
+        )
+        result["elasticity_revpar"]       = er.predicted_revpar
+        result["elasticity_lift_pct"]     = er.true_lift_pct
+        result["elasticity_used"]         = er.elasticity_used
+        # CRM价格本身不覆盖（CRM有其忠诚度折扣逻辑），仅记录RevPAR验证结果
+
+    return result
+
+
+# ── CrewAI兼容别名（run_23star_test已重命名为run_3star_test）────────────────────
+run_23star_test = run_3star_test
 
 
 # ── 异常检测 ───────────────────────────────────────────────────────────────────

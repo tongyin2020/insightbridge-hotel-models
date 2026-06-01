@@ -59,6 +59,20 @@ except ImportError:
     def _dsec_season_mults(star, conn): return {"peak": 1.20, "shoulder": 1.0, "off_peak": 0.85}
     def _dsec_init_and_seed(conn): return 0
 
+try:
+    from elasticity_engine import optimize_price as _elasticity_optimize
+    _ELASTICITY_OK = True
+except ImportError:
+    _ELASTICITY_OK = False
+    def _elasticity_optimize(candidate_price, market_price, star, district="NAPE",
+                              demand_level="NORMAL", season="normal", hotel_id=None):
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            optimal_price=candidate_price, predicted_occupancy=0.72,
+            predicted_revpar=candidate_price*0.72, baseline_revpar=market_price*0.72,
+            true_lift_pct=0.0, elasticity_used=0.0, data_source="unavailable", search_steps=0
+        )
+
 # ── 自主获客模型（从 simulation_test 复用）─────────────────────────────────
 _SIM_DIR = Path("/Users/tongyin/Desktop/Hotel Model Rvisions/simulation_test")
 if str(_SIM_DIR) not in _sys.path:
@@ -836,6 +850,29 @@ def main() -> int:
                     global_counts["mare_failures"] += 1
                 for issue in issues:
                     global_counts["issue_counts"][issue] = global_counts["issue_counts"].get(issue, 0) + 1
+
+                # ── Phase 2：弹性引擎 RevPAR 最优化 ──────────────────────────
+                if _ELASTICITY_OK and ok and result.get("recommended_price", 0) > 0:
+                    mkt_price = float(snapshot.competitor_price or base)
+                    _occ = sc.current_occupancy   # occupancy comes from scenario, not snapshot
+                    er = _elasticity_optimize(
+                        candidate_price = result["recommended_price"],
+                        market_price    = mkt_price,
+                        star            = hotel["star"],
+                        district        = hotel.get("district", "NAPE"),
+                        demand_level    = ("HIGH" if _occ > 0.80
+                                           else "LOW" if _occ < 0.55
+                                           else "NORMAL"),
+                        season          = ("peak" if snapshot.holiday > 0 else "normal"),
+                        hotel_id        = hotel["hotel_id"],
+                    )
+                    result["recommended_price"]   = er.optimal_price
+                    result["predicted_occupancy"] = er.predicted_occupancy
+                    result["predicted_revpar"]    = er.predicted_revpar
+                    result["expected_revenue_lift"] = f"+{er.true_lift_pct:.1f}%"
+                    result["elasticity_used"]     = er.elasticity_used
+                    result["elasticity_source"]   = er.data_source
+
                 write_jsonl(log_path, {
                     "timestamp_utc": ts.isoformat(),
                     "cycle": cycle + 1,

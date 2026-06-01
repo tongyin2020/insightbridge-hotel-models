@@ -74,6 +74,25 @@ from run_simulation import (
     compute_dynamic_base_price,   # DSEC×85% + MakCorps×15% 动态base_price
 )
 
+# ── Phase 2 弹性引擎 ──────────────────────────────────────────────────
+import sys as _sys_elast
+_COLLECTOR_DIR_CREWAI = "/Users/tongyin/Desktop/InsightBridge_模型测试系统/hotel_collector"
+if _COLLECTOR_DIR_CREWAI not in _sys_elast.path:
+    _sys_elast.path.insert(0, _COLLECTOR_DIR_CREWAI)
+try:
+    from elasticity_engine import optimize_price as _elasticity_optimize
+    _ELASTICITY_OK_CREWAI = True
+except ImportError:
+    _ELASTICITY_OK_CREWAI = False
+    def _elasticity_optimize(candidate_price, market_price, star, district="NAPE",
+                              demand_level="NORMAL", season="normal", hotel_id=None):
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            optimal_price=candidate_price, predicted_occupancy=0.72,
+            predicted_revpar=candidate_price*0.72, baseline_revpar=market_price*0.72,
+            true_lift_pct=0.0, elasticity_used=0.0, data_source="unavailable", search_steps=0
+        )
+
 # ── 切换为澳门旅游局官方76家真实酒店 ─────────────────────────────────────────
 import sys as _sys_main
 _SIM_DIR_MAIN = "/Users/tongyin/Desktop/Hotel Model Rvisions/simulation_test"
@@ -275,7 +294,7 @@ def read_playwright_baseline(hour: int) -> dict:
     try:
         conn = sqlite3.connect(baseline_db)
         rows = conn.execute(
-            "SELECT AVG(rec_price) FROM hourly_runs WHERE model_type='MARE_23_STAR' AND sim_hour=?",
+            "SELECT AVG(rec_price) FROM hourly_runs WHERE model_type='MARE_ALL' AND sim_hour=?",
             (hour,)
         ).fetchone()
         conn.close()
@@ -374,6 +393,23 @@ def main():
                 rd = real_data
             try:
                 r = run_23star_test(hotel, signal, rd, scenario)
+                # ── Phase 2：弹性引擎 RevPAR 最优化 ──────────────────────
+                if _ELASTICITY_OK_CREWAI and r.get("recommended_price", 0) > 0:
+                    mkt_price = float(_ota_ref_45 if hotel["star"] >= 4 else _ota_ref_23)
+                    er = _elasticity_optimize(
+                        candidate_price = r["recommended_price"],
+                        market_price    = mkt_price,
+                        star            = hotel["star"],
+                        district        = hotel.get("district", "NAPE"),
+                        demand_level    = signal.get("demand_state", "NORMAL"),
+                        season          = signal.get("season", "normal"),
+                        hotel_id        = hotel.get("hotel_id"),
+                    )
+                    r["recommended_price"]   = er.optimal_price
+                    r["predicted_occupancy"] = er.predicted_occupancy
+                    r["predicted_revpar"]    = er.predicted_revpar
+                    r["expected_revenue_lift"] = f"+{er.true_lift_pct:.1f}%"
+                    r["elasticity_used"]     = er.elasticity_used
                 anom = detect_anomalies(hotel, r, signal, "MARE_ALL")
                 rp = r.get("recommended_price", 0)
                 mare_prices.append(rp)
@@ -387,7 +423,10 @@ def main():
                                  "ota_source": signal["ota_pace_source"]}),
                      json.dumps({"recommended_price": rp,
                                  "demand_state": r.get("demand_state"),
-                                 "confidence": r.get("confidence")}),
+                                 "confidence": r.get("confidence"),
+                                 "predicted_occupancy": r.get("predicted_occupancy"),
+                                 "predicted_revpar": r.get("predicted_revpar"),
+                                 "elasticity_used": r.get("elasticity_used")}),
                      rp, r.get("demand_state"), r.get("confidence"),
                      r.get("expected_revenue_lift"), "; ".join(anom),
                      weather_c, int(signal["is_holiday"]), int(signal["is_weekend"]))
