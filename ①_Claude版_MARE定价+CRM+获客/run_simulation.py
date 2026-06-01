@@ -1085,9 +1085,11 @@ def run_director_crm_test(hotel: dict, signal: dict, real_data: dict,
 def detect_anomalies(hotel: dict, result: dict, signal: dict, model_type: str) -> list[str]:
     anomalies = []
 
-    if model_type == "MARE_3_STAR":
+    if model_type == "MARE_ALL":
         rec_price = result.get("recommended_price", 0)
         base = hotel["base_price"]
+        star = hotel.get("star", 3)
+        floor_warn = {3: 350, 4: 650, 5: 1000}.get(star, 350)
 
         if rec_price <= 0:
             anomalies.append("CRITICAL: 推荐价格为零或负数")
@@ -1095,16 +1097,15 @@ def detect_anomalies(hotel: dict, result: dict, signal: dict, model_type: str) -
             anomalies.append(f"WARN: 价格异常高 MOP {rec_price} (>{base*2.5:.0f} = 2.5x基础价)")
         if rec_price < base * 0.5:
             anomalies.append(f"WARN: 价格异常低 MOP {rec_price} (<{base*0.5:.0f} = 0.5x基础价)")
-
-        if rec_price < 350:
-            anomalies.append(f"WARN: 价格低于3★市场底线 MOP {rec_price}")
+        if rec_price < floor_warn:
+            anomalies.append(f"WARN: 价格低于{star}★市场底线 MOP {rec_price} (底线={floor_warn})")
 
         # Guardrail违规
         violations = result.get("guardrail_report", {}).get("violations", [])
         if violations:
             anomalies.append(f"GUARDRAIL: {len(violations)}项规则违反: {[v.get('rule','?') for v in violations[:3]]}")
 
-    elif model_type == "DIRECTOR_CRM_3_STAR":
+    elif model_type == "DIRECTOR_CRM_ALL":
         if result.get("psrs_status") == "error":
             anomalies.append("CRITICAL: PSRS系统同步失败—预订数据未入库")
         if result.get("integration_score", 1.0) < 0.25:
@@ -1116,7 +1117,7 @@ def detect_anomalies(hotel: dict, result: dict, signal: dict, model_type: str) -
         if result.get("whatsapp_sent") and not result.get("whatsapp_delivered"):
             anomalies.append("WARN: WhatsApp发送失败—客户触达中断")
 
-    elif model_type == "SELFACQ_45_STAR":
+    elif model_type == "SELFACQ_ALL":
         if not result.get("direct_wins_vs_ota", True):
             anomalies.append("LOGIC: 直销净收益低于OTA净收益—自主获客模型失效")
         dp = result.get("direct_offer_price", 0)

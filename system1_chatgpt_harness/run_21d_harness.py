@@ -84,9 +84,9 @@ UTC = timezone.utc
 REAL_DB_PATH = Path("/Users/tongyin/Desktop/InsightBridge_模型测试系统/hotel_collector/hotel_real_data.db")
 
 # ── 双层OTA折算系数（OTA价 × 此系数 ≈ 官网BAR）
-# 2-3-4★ 大众市场：OTA溢价约18%，折算系数0.85
+# 3-4★ 大众市场：OTA溢价约18%，折算系数0.85
 # 5★ 奢华市场：澳门五星直订大量补贴，OTA溢价约39%，折算系数0.72
-OTA_TO_BAR_MASS    = 0.85   # 2-3-4★ 大众市场
+OTA_TO_BAR_MASS    = 0.85   # 3-4★ 大众市场
 OTA_TO_BAR_LUXURY  = 0.72   # 5★ 奢华市场
 OTA_TO_BAR_RATIO   = OTA_TO_BAR_MASS   # 向后兼容保留
 
@@ -565,7 +565,6 @@ def _tier_guardrails(base_price: float, star: int) -> tuple[float, float]:
     """按星级计算合理的 floor/ceiling，避免硬编码 750/1015 导致低端酒店价格被截断。"""
     # 以 base_price 为锚点，星级越高弹性越大
     ratios = {
-        2: (0.82, 1.38),
         3: (0.83, 1.42),
         4: (0.80, 1.55),
         5: (0.75, 1.65),
@@ -790,7 +789,7 @@ def main() -> int:
                     "star": star,
                     "base_price": float(round(_rng.uniform(plo, phi) / (10 if star<=3 else 50)) * (10 if star<=3 else 50)),
                     "total_rooms": _rng.randint(rlo, rhi),
-                    "market_segment": "macau_luxury_direct" if star >= 4 else None,
+                    "market_segment": "macau_luxury_direct" if star >= 4 else "macau_3star_plus",
                 })
     print(f"[harness] 酒店名单: {len(ALL_HOTELS_GPT)}家 ({'澳门旅游局官方76家' if _ROSTER_OK else '虚构425家(降级)'})")
 
@@ -809,7 +808,7 @@ def main() -> int:
         ts = now_utc()
         snapshot = build_external_snapshot(ts)
 
-        # ── MARE：对全部425家酒店 × 所有场景 ────────────────────────────
+        # ── MARE：对全部76家酒店 × 所有场景 ─────────────────────────────
         for hotel in ALL_HOTELS_GPT:
             # 动态计算 base_price：历史BAR(60%) + OTA推算(40%) + 声誉修正
             # 有真实数据时自动切换，冷启动时用OTA估算；声誉冷启动时 rep_adj=0
@@ -850,7 +849,7 @@ def main() -> int:
                     "result": result,
                 })
 
-        # ── Director：对全部425家酒店 × 所有场景 ────────────────────────
+        # ── Director：对全部76家酒店 × 所有场景 ─────────────────────────
         for hotel in ALL_HOTELS_GPT:
             ota_ref = snapshot.competitor_price if hotel["star"] <= 3 else snapshot.upper_tier_adr
             _tier = {3: "3_star", 4: "4_star", 5: "5_star"}.get(hotel["star"], "3_star")
@@ -889,7 +888,7 @@ def main() -> int:
                     "result": result,
                 })
 
-        # ── 自主获客集成模型（SELFACQ）：全部425家酒店 × 14标准场景 ───────────
+        # ── 自主获客集成模型（SELFACQ）：全部76家酒店 × 14标准场景 ────────────
         if _SELFACQ_OK and _SIM_SCENARIOS:
             # 将 ExternalSnapshot 转换为 run_45star_test 所需格式
             _signal = {
