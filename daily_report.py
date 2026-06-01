@@ -70,10 +70,15 @@ def _real_market_avgs() -> tuple:
     返回两个独立市场的真实官网BAR均价（近7天，source_ok=1）：
       low_avg  = 3-4★市场（tiers: 3_star, 4_star）
       high_avg = 5★豪华市场（tiers: 5_star, 5_deluxe）
+
+    数据优先级：
+      1. price_snapshots.official_bar（官网BAR，最权威）
+      2. makcorps_snapshots.min_ota_price（OTA最低价，用于弥补官网数据不足的星级）
     """
     conn = _db(COLLECTOR_DB)
     low_avg = high_avg = None
     if conn:
+        # ── 官网BAR价格（主数据源）
         rows = conn.execute("""
             SELECT tier, AVG(official_bar), COUNT(*)
             FROM price_snapshots
@@ -82,22 +87,49 @@ def _real_market_avgs() -> tuple:
             GROUP BY tier
         """).fetchall()
         rm = {r[0]: (r[1], r[2]) for r in rows}
-        # 3-4★市场：加权平均 3_star + 4_star
+
+        # ── OTA价格（makcorps_snapshots，弥补官网数据不足）
+        # star=3/4 → low market; star=5 → high market
+        try:
+            mkc_rows = conn.execute("""
+                SELECT star, AVG(min_ota_price), COUNT(*)
+                FROM makcorps_snapshots
+                WHERE api_ok=1 AND min_ota_price > 100
+                  AND snapshot_time >= datetime('now','-7 days')
+                GROUP BY star
+            """).fetchall()
+            mkc_by_star = {r[0]: (r[1], r[2]) for r in mkc_rows}
+        except Exception:
+            mkc_by_star = {}
+
+        # 3-4★市场：加权平均官网BAR；若某星级官网数据不足，补充OTA均价
         low_vals, low_cnts = [], []
         for t in ("3_star", "4_star"):
-            if t in rm and rm[t][0]:
+            star_int = int(t[0])
+            if t in rm and rm[t][0] and rm[t][1] >= 3:      # 至少3条官网记录才用
                 low_vals.append(rm[t][0] * rm[t][1])
                 low_cnts.append(rm[t][1])
+            elif star_int in mkc_by_star and mkc_by_star[star_int][0]:
+                mkt_p, mkt_c = mkc_by_star[star_int]
+                low_vals.append(mkt_p * mkt_c)
+                low_cnts.append(mkt_c)
         if low_cnts:
             low_avg = sum(low_vals) / sum(low_cnts)
-        # 5★豪华市场：加权平均 5_star + 5_deluxe
+
+        # 5★豪华市场：加权平均官网BAR；若不足则补充OTA
         high_vals, high_cnts = [], []
         for t in ("5_star", "5_deluxe"):
-            if t in rm and rm[t][0]:
+            star_int = 5
+            if t in rm and rm[t][0] and rm[t][1] >= 3:
                 high_vals.append(rm[t][0] * rm[t][1])
                 high_cnts.append(rm[t][1])
+            elif star_int in mkc_by_star and mkc_by_star[star_int][0] and not high_vals:
+                mkt_p, mkt_c = mkc_by_star[star_int]
+                high_vals.append(mkt_p * mkt_c)
+                high_cnts.append(mkt_c)
         if high_cnts:
             high_avg = sum(high_vals) / sum(high_cnts)
+
         conn.close()
     return low_avg, high_avg
 
@@ -527,8 +559,9 @@ def sys3_section() -> str:
 
     # 分市场真实均价
     real_low, real_high = _real_market_avgs()
-    # CrewAI 的 hourly_runs 目前无 hotel_star 分组，用 MARE_3_STAR_FC vs MARE_ALL_FC 区分
-    m_low  = mdata.get("MARE_3_STAR_FC")
+    # CrewAI 的 hourly_runs 目前无 hotel_star 分组（统一用 MARE_ALL_FC）
+    # 若将来引入星级分组，可替换为 MARE_3_STAR_FC / MARE_45_STAR_FC
+    m_low  = mdata.get("MARE_3_STAR_FC") or m   # 回退到 MARE_ALL_FC
     m_high = mdata.get("MARE_ALL_FC") or m
 
     return "\n".join([
