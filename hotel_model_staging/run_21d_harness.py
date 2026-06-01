@@ -108,9 +108,19 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
                                 tier: str = None) -> float:
     """
     动态计算 base_price（含声誉情感修正）：
-      Step A — 历史BAR(60%) + OTA推算(40%)，冷启动时 OTA×0.97
+      Step A — 历史参考价（四层优先级）：
+               层0(新) makcorps_snapshots OTA均价（每小时采集，优先级最高）
+               层1 Shifter真实BAR(85%) + DSEC(15%) → 混合OTA权重
+               层2 Shifter OTA折算BAR(85%) + DSEC(15%) → 混合OTA权重
+               层3 冷启动：DSEC统计局(100%)
+               层4 完全冷启动兜底：OTA估算×0.97
       Step B — 星级范围截断
       Step C — 声誉情感修正：base × (1 + rep_adj)，其中 rep_adj ∈ [-0.17, +0.17]
+      Step D — 库存紧张溢价（avail_level: critical/low/moderate）
+
+    OTA权重按需求档位差异化（淡季不跟价格战，旺季锚定自身BAR）：
+      大众(2-4★): LOW=0.40 / NORMAL=0.50 / HIGH=0.25
+      豪华(5★):   LOW=0.15 / NORMAL=0.30 / HIGH=0.20
 
     Args:
         hotel_id: 酒店ID（MAC_5DX_WYNN_001 格式）
@@ -131,12 +141,12 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
     ota_estimate = ota_snapshot_price * ratio
     ota_estimate = max(ota_estimate, 100.0)   # 保底
 
-    # ── 星级差异化历史/OTA混合权重 ────────────────────────────────────────
+    # ── 静态基础权重（后续按需求档位覆盖）────────────────────────────────
     w_bar = BAR_WEIGHT.get(star, 0.55)   # 历史BAR权重
     w_ota = OTA_WEIGHT.get(star, 0.45)   # OTA推算权重
 
     real_bar_avg  = None   # 来自hotel_real_data.db price_snapshots（轨道A：官网BAR）
-    real_ota_avg  = None   # 来自hotel_real_data.db price_snapshots（轨道B：OTA竞对）
+    real_ota_avg  = None   # 来自 makcorps_snapshots（优先） or price_snapshots（轨道B）
     dsec_adr_ref  = 0.0
     shared_conn: sqlite3.Connection | None = None
 
@@ -144,7 +154,17 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
         try:
             shared_conn = sqlite3.connect(str(REAL_DB_PATH), timeout=5)
 
-            # ── 优先：Shifter采集的真实官网BAR（最近7天快照，同月份入住日期）
+            # ── 层0（新）：优先读取 makcorps_snapshots OTA均价（每小时采集，数据密度高）
+            row_mc = shared_conn.execute("""
+                SELECT avg_ota_price FROM makcorps_snapshots
+                WHERE hotel_id = ? AND api_ok = 1 AND avg_ota_price > 200
+                  AND snapshot_time >= datetime('now', '-48 hours')
+                ORDER BY snapshot_time DESC LIMIT 1
+            """, (hotel_id,)).fetchone()
+            if row_mc and row_mc[0]:
+                real_ota_avg = float(row_mc[0])  # 覆盖 price_snapshots.booking_rate
+
+            # ── 层1：Shifter采集的真实官网BAR（最近7天快照，同月份入住日期）
             row = shared_conn.execute("""
                 SELECT AVG(official_bar), COUNT(*)
                 FROM price_snapshots
@@ -157,17 +177,18 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
             if row and row[1] and row[1] >= 1:
                 real_bar_avg = float(row[0])
 
-            # ── 备用：Booking.com OTA竞对价（最近7天）
-            row_ota = shared_conn.execute("""
-                SELECT AVG(booking_rate), COUNT(*)
-                FROM price_snapshots
-                WHERE hotel_id = ?
-                  AND booking_rate > 200
-                  AND CAST(strftime('%m', checkin_date) AS INTEGER) = ?
-                  AND snapshot_time >= datetime('now', '-7 days')
-            """, (hotel_id, month)).fetchone()
-            if row_ota and row_ota[1] and row_ota[1] >= 1:
-                real_ota_avg = float(row_ota[0])
+            # ── 层2备用：Booking.com OTA竞对价（仅当 makcorps_snapshots 无数据时）
+            if real_ota_avg is None:
+                row_ota = shared_conn.execute("""
+                    SELECT AVG(booking_rate), COUNT(*)
+                    FROM price_snapshots
+                    WHERE hotel_id = ?
+                      AND booking_rate > 200
+                      AND CAST(strftime('%m', checkin_date) AS INTEGER) = ?
+                      AND snapshot_time >= datetime('now', '-7 days')
+                """, (hotel_id, month)).fetchone()
+                if row_ota and row_ota[1] and row_ota[1] >= 1:
+                    real_ota_avg = float(row_ota[0])
 
         except Exception:
             pass
@@ -180,6 +201,26 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
                 _dc.close()
         except Exception:
             pass
+
+    # ── 需求档位差异化OTA权重（覆盖静态权重）────────────────────────────────
+    # 淡季不跟随OTA价格战；旺季自身BAR主导，OTA权重反而降低
+    # 大众(2-4★): LOW→0.40, NORMAL→0.50, HIGH→0.25
+    # 豪华(5★):   LOW→0.15, NORMAL→0.30, HIGH→0.20
+    _DEMAND_OTA_W = {
+        ("mass",   "LOW"):    0.40, ("mass",   "NORMAL"): 0.50, ("mass",   "HIGH"): 0.25,
+        ("luxury", "LOW"):    0.15, ("luxury", "NORMAL"): 0.30, ("luxury", "HIGH"): 0.20,
+    }
+    demand_level = "NORMAL"
+    if _DSEC_OK and shared_conn:
+        try:
+            from dsec_loader import get_dsec_demand_signal as _dsec_sig
+            sig = _dsec_sig(month, star, shared_conn)   # [-1, +1]
+            demand_level = "HIGH" if sig > 0.15 else ("LOW" if sig < -0.15 else "NORMAL")
+        except Exception:
+            pass
+    seg = "luxury" if star >= 5 else "mass"
+    w_ota = _DEMAND_OTA_W.get((seg, demand_level), w_ota)
+    w_bar = 1.0 - w_ota
 
     # ── 四层优先级定价参考（MakCorps已停用）────────────────────────────────
     # 层1：Shifter真实官网BAR → 85%BAR + 15%DSEC背景，再与OTA权重混合
