@@ -195,7 +195,7 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
     # 大众(2-4★): LOW→0.40, NORMAL→0.50, HIGH→0.25
     # 豪华(5★):   LOW→0.15, NORMAL→0.30, HIGH→0.20
     _DEMAND_OTA_W = {
-        ("mass",   "LOW"):    0.40, ("mass",   "NORMAL"): 0.50, ("mass",   "HIGH"): 0.25,
+        ("mass",   "LOW"):    0.40, ("mass",   "NORMAL"): 0.40, ("mass",   "HIGH"): 0.25,
         ("luxury", "LOW"):    0.15, ("luxury", "NORMAL"): 0.30, ("luxury", "HIGH"): 0.20,
     }
     demand_level = "NORMAL"
@@ -217,13 +217,13 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
     # 层4：完全冷启动兜底（无任何真实数据）
     if real_bar_avg is not None:
         # 层1：有Shifter真实BAR — 85%真实BAR + 15%DSEC市场背景
-        historical_ref = (0.85 * real_bar_avg + 0.15 * dsec_adr_ref
+        historical_ref = (0.75 * real_bar_avg + 0.25 * dsec_adr_ref
                           if dsec_adr_ref > 0 else real_bar_avg)
         base = w_bar * historical_ref + w_ota * ota_estimate
     elif real_ota_avg is not None:
         # 层2：有Shifter OTA价 — 折算BAR：85%折算BAR + 15%DSEC
         ota_bar_est = real_ota_avg * ratio
-        historical_ref = (0.85 * ota_bar_est + 0.15 * dsec_adr_ref
+        historical_ref = (0.75 * ota_bar_est + 0.25 * dsec_adr_ref
                           if dsec_adr_ref > 0 else ota_bar_est)
         base = w_bar * historical_ref + w_ota * ota_estimate
     elif dsec_adr_ref > 0:
