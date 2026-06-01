@@ -510,6 +510,18 @@ from data_fetchers.scenario_engine import get_scenario, get_scenario_stats, Hote
 import pricing_engine as pe
 from objective_modes import ObjectiveMode, apply_objective_adjustment, get_objective_weights
 from recommendations import RecommendationRequest
+from types import SimpleNamespace
+
+# ── 星级专属护栏配置（防止低/高端酒店因默认护栏MOP750-1015触发虚假违规）──────────
+_STAR_GUARDRAIL = {
+    2: SimpleNamespace(floor_price=280,  ceiling_price=900),
+    3: SimpleNamespace(floor_price=420,  ceiling_price=1600),
+    4: SimpleNamespace(floor_price=750,  ceiling_price=3500),
+    5: SimpleNamespace(floor_price=1200, ceiling_price=8000),
+}
+def _hotel_settings(hotel: dict):
+    """返回与酒店星级匹配的护栏设置对象（模拟per-hotel配置）。"""
+    return _STAR_GUARDRAIL.get(hotel.get("star", 3), _STAR_GUARDRAIL[3])
 
 # ── 配置 ──────────────────────────────────────────────────────────────────────
 TOTAL_HOURS = 21 * 24          # 504小时 = 21天
@@ -810,7 +822,7 @@ def run_23star_test(hotel: dict, signal: dict, real_data: dict,
         # DSEC 澳门统计局月度需求信号
         dsec_market_occ=signal.get("dsec_market_occ", 0.0),
     )
-    return pe.recommend(req)
+    return pe.recommend(req, hotel_settings=_hotel_settings(hotel))
 
 
 # ── 4-5星自主获客模型测试 ──────────────────────────────────────────────────────
