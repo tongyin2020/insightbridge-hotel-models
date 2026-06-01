@@ -67,8 +67,11 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
                                 month: int = None) -> float:
     """
     动态计算 base_price，替代随机数方式：
-      Step A — 历史参考价 = 真实官网BAR(85%) + DSEC统计局(15%) | OTA竞对价备用
-              再按星级权重与实时OTA推算混合（5★偏历史70%，2-4★偏OTA45%）
+      Step A — 历史参考价（四层优先级，MakCorps已停用）：
+               层1 Shifter真实BAR(85%) + DSEC(15%) → 混合OTA权重
+               层2 Shifter OTA折算BAR(85%) + DSEC(15%) → 混合OTA权重
+               层3 冷启动：DSEC统计局(100%)，不与MakCorps fallback混合
+               层4 完全冷启动兜底：OTA估算×0.97
       Step B — 星级范围截断
       Step C — 声誉情感修正 rep_adj ∈ [-0.17, +0.17]
     """
@@ -127,27 +130,27 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
         except Exception:
             pass
 
-    # ── 三层优先级定价参考 ────────────────────────────────────────────────
-    # 层1：真实官网BAR（最权威）— Shifter采集的hotel_real_data.db
-    # 层2：真实OTA价（折算BAR）— Booking.com价格×折算系数
-    # 层3：DSEC统计局历史均价（纯市场参考）
+    # ── 四层优先级定价参考（MakCorps已停用）────────────────────────────────
+    # 层1：Shifter真实官网BAR → 85%BAR + 15%DSEC背景，再与OTA权重混合
+    # 层2：Shifter真实OTA价折算BAR → 85%折算BAR + 15%DSEC，再与OTA权重混合
+    # 层3：冷启动 — DSEC统计局100%作为唯一历史参考（MakCorps已停用，不再混合fallback）
+    # 层4：完全冷启动兜底（无任何真实数据）
     if real_bar_avg is not None:
-        # 官网BAR直接作为历史参考：85%真实BAR + 15%DSEC市场背景
+        # 层1：有Shifter真实BAR — 85%真实BAR + 15%DSEC市场背景
         historical_ref = (0.85 * real_bar_avg + 0.15 * dsec_adr_ref
                           if dsec_adr_ref > 0 else real_bar_avg)
+        base = w_bar * historical_ref + w_ota * ota_estimate
     elif real_ota_avg is not None:
-        # OTA折算为BAR：85%折算BAR + 15%DSEC
+        # 层2：有Shifter OTA价 — 折算BAR：85%折算BAR + 15%DSEC
         ota_bar_est = real_ota_avg * ratio
         historical_ref = (0.85 * ota_bar_est + 0.15 * dsec_adr_ref
                           if dsec_adr_ref > 0 else ota_bar_est)
-    elif dsec_adr_ref > 0:
-        historical_ref = dsec_adr_ref
-    else:
-        historical_ref = None
-
-    if historical_ref is not None:
         base = w_bar * historical_ref + w_ota * ota_estimate
+    elif dsec_adr_ref > 0:
+        # 层3：冷启动 — DSEC统计局为唯一历史参考，不与MakCorps fallback混合
+        base = dsec_adr_ref
     else:
+        # 层4：完全冷启动兜底（无真实数据）
         base = ota_estimate * 0.97
 
     # Step B：星级范围截断
