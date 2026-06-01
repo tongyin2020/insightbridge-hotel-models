@@ -299,6 +299,49 @@ def _load_brightdata_prices() -> dict:
     except Exception:
         return {}
 
+def _load_market_benchmarks_by_star() -> dict:
+    """
+    从 price_snapshots 按星级分类计算真实市场基准价（Option A）。
+    返回：
+      mass    — 3★+4★ 大众市场均价（MARE/CRM 对比基准）
+      luxury  — 5★ 豪华市场均价（DirectorAI/SelfACQ 对比基准）
+    每个子字典含 count/avg/min/max/p25/p75 字段。
+    """
+    result = {"mass": {}, "luxury": {}}
+    if not _REAL_DB_PATH.exists():
+        return result
+    try:
+        conn = sqlite3.connect(str(_REAL_DB_PATH), timeout=5)
+
+        def _seg_stats(star_filter: str) -> dict:
+            rows = conn.execute(f"""
+                SELECT official_bar
+                FROM price_snapshots
+                WHERE {star_filter}
+                  AND official_bar > 200
+                  AND source_ok = 1
+                ORDER BY official_bar
+            """).fetchall()
+            if not rows:
+                return {}
+            prices = [r[0] for r in rows]
+            n = len(prices)
+            return {
+                "count": n,
+                "avg":   round(sum(prices) / n),
+                "min":   prices[0],
+                "max":   prices[-1],
+                "p25":   prices[n // 4],
+                "p75":   prices[n * 3 // 4],
+            }
+
+        result["mass"]   = _seg_stats("star IN (3, 4)")
+        result["luxury"] = _seg_stats("star = 5")
+        conn.close()
+    except Exception:
+        pass
+    return result
+
 def _alert_critical(hour: int, critical_list: list[str], avg_mare: float, avg_acq: float):
     """CRITICAL 告警推送（每2小时最多一次）"""
     global _last_critical_alert
@@ -319,7 +362,7 @@ def _alert_critical(hour: int, critical_list: list[str], avg_mare: float, avg_ac
         f"**第{hour+1}小时** | {datetime.now():%Y-%m-%d %H:%M}\n\n"
         f"**异常详情：**\n{details}\n"
         f"{scenario_note}\n"
-        f"MARE均价: MOP {avg_mare:.0f}（2-3星） | 直销均价: MOP {avg_acq:.0f}（4-5星）"
+        f"MARE均价: MOP {avg_mare:.0f}（3-4星） | 直销均价: MOP {avg_acq:.0f}（5星豪华）"
     )
     _wecom_push_async(msg)
 
@@ -332,20 +375,32 @@ def _push_metrics_snapshot(hour: int, avg_mare: float, avg_crm: float, avg_acq: 
         return
     _last_metrics_push = now
 
-    bd = _load_brightdata_prices()
+    bm = _load_market_benchmarks_by_star()
+    mass_bm    = bm.get("mass", {})
+    luxury_bm  = bm.get("luxury", {})
     market_section = ""
-    if bd:
-        if bd["p25"] > 0:
-            mare_vs = ((avg_mare - bd["avg"]) / bd["avg"] * 100)
-            trend = "📈 高于" if mare_vs > 2 else ("📉 低于" if mare_vs < -2 else "≈ 贴近")
-            src_label = bd.get("sources", "Agoda+Trip.com")
+    if mass_bm or luxury_bm:
+        rows = ""
+        if mass_bm and mass_bm.get("avg", 0) > 0:
+            mare_vs = (avg_mare - mass_bm["avg"]) / mass_bm["avg"] * 100
+            trend_m = "📈 高于" if mare_vs > 2 else ("📉 低于" if mare_vs < -2 else "≈ 贴近")
+            rows += (
+                f"| 3-4★大众均价 | MOP {mass_bm['avg']} ({mass_bm['count']}条) "
+                f"| MOP {avg_mare:.0f} | {trend_m} {abs(mare_vs):.1f}% |\n"
+            )
+        if luxury_bm and luxury_bm.get("avg", 0) > 0:
+            acq_vs = (avg_acq - luxury_bm["avg"]) / luxury_bm["avg"] * 100
+            trend_l = "📈 高于" if acq_vs > 2 else ("📉 低于" if acq_vs < -2 else "≈ 贴近")
+            rows += (
+                f"| 5★豪华均价 | MOP {luxury_bm['avg']} ({luxury_bm['count']}条) "
+                f"| MOP {avg_acq:.0f} | {trend_l} {abs(acq_vs):.1f}% |\n"
+            )
+        if rows:
             market_section = (
-                f"\n**📊 OTA市场对比（{bd['date']}，{src_label}，{bd['count']}家）**\n"
-                f"| | 市场 | 模型推荐 | 偏差 |\n"
+                f"\n**📊 分市场对比（price_snapshots 真实快照）**\n"
+                f"| 细分市场 | 真实均价 | 模型推荐 | 偏差 |\n"
                 f"|---|---|---|---|\n"
-                f"| 均价 | MOP {bd['avg']} | MOP {avg_mare:.0f} | {trend} {abs(mare_vs):.1f}% |\n"
-                f"| P25–P75 | MOP {bd['p25']}–{bd['p75']} | — | — |\n"
-                f"| 全市场区间 | MOP {bd['min']}–{bd['max']} | — | — |\n"
+                f"{rows}"
             )
 
     status = "✅ 正常" if anomaly_count == 0 else f"⚠️ {anomaly_count} 项异常"
@@ -369,25 +424,35 @@ def _push_daily_summary(summary: dict):
     health_icon = "✅" if summary['anomalies'] == 0 else ("⚠️" if summary['anomalies'] < 500 else "🔴")
     day = summary.get('day', 0) + 1
 
-    bd = _load_brightdata_prices()
+    bm = _load_market_benchmarks_by_star()
+    mass_bm   = bm.get("mass", {})
+    luxury_bm = bm.get("luxury", {})
     market_note = ""
-    if bd:
-        mare_diff = summary['avg_mare_price'] - bd['avg']
-        arrow = "↑" if mare_diff > 0 else "↓"
-        src_label = bd.get("sources", "Agoda+Trip.com")
-        market_note = (
-            f"\n**OTA市场基准（{bd['date']}，{src_label}，{bd['count']}家）**\n"
-            f"市场均价 MOP {bd['avg']} | P25–P75: MOP {bd['p25']}–{bd['p75']}\n"
-            f"MARE推荐 vs 市场均价：{arrow} {abs(mare_diff):.0f} MOP "
-            f"({mare_diff/bd['avg']*100:+.1f}%)\n"
-        )
+    if mass_bm or luxury_bm:
+        lines = []
+        if mass_bm and mass_bm.get("avg", 0) > 0:
+            mare_diff = summary['avg_mare_price'] - mass_bm['avg']
+            arrow = "↑" if mare_diff > 0 else "↓"
+            lines.append(
+                f"3-4★大众基准 MOP {mass_bm['avg']} ({mass_bm['count']}条) | "
+                f"MARE推荐 {arrow} {abs(mare_diff):.0f} MOP ({mare_diff/mass_bm['avg']*100:+.1f}%)"
+            )
+        if luxury_bm and luxury_bm.get("avg", 0) > 0:
+            acq_diff = summary['avg_selfacq_offer'] - luxury_bm['avg']
+            arrow = "↑" if acq_diff > 0 else "↓"
+            lines.append(
+                f"5★豪华基准 MOP {luxury_bm['avg']} ({luxury_bm['count']}条) | "
+                f"SelfACQ推荐 {arrow} {abs(acq_diff):.0f} MOP ({acq_diff/luxury_bm['avg']*100:+.1f}%)"
+            )
+        if lines:
+            market_note = "\n**分市场真实基准对比**\n" + "\n".join(lines) + "\n"
 
-    # 估算 RevPAR 提升（简化：MARE vs 市场均价的相对优势）
+    # 估算 RevPAR 提升（3-4★ MARE vs 大众市场均价）
     revpar_note = ""
-    if bd and bd['avg'] > 0:
-        uplift_pct = (summary['avg_mare_price'] - bd['avg']) / bd['avg'] * 100
+    if mass_bm and mass_bm.get("avg", 0) > 0:
+        uplift_pct = (summary['avg_mare_price'] - mass_bm['avg']) / mass_bm['avg'] * 100
         if uplift_pct > 0:
-            revpar_note = f"\n> 💡 较市场均价高 **{uplift_pct:.1f}%**，预计 RevPAR 正向贡献\n"
+            revpar_note = f"\n> 💡 MARE较3-4★市场均价高 **{uplift_pct:.1f}%**，预计 RevPAR 正向贡献\n"
 
     msg = (
         f"## 🏨 AI模型日报 — 第{day}天\n"
