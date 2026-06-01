@@ -351,11 +351,30 @@ def sys2_section() -> str:
     """).fetchall()
     tmap = {r[0]: (r[1], r[2]) for r in tot_rows}
 
-    # 最新日汇总
+    # 最新日汇总（daily_summaries 仅用 anomaly_count / total_runs；价格字段可能为0，不信任）
     lsum = conn.execute("""
         SELECT avg_rec_price_23, avg_rec_price_45, anomaly_count, total_runs
         FROM daily_summaries ORDER BY day DESC LIMIT 1
     """).fetchone()
+
+    # 直接从 hourly_runs 计算各星级推荐价（兼容 hotel_star 列缺失的旧库）
+    has_hotel_star = conn.execute(
+        "SELECT COUNT(*) FROM pragma_table_info('hourly_runs') WHERE name='hotel_star'"
+    ).fetchone()[0] > 0
+    if has_hotel_star:
+        tier_rows = conn.execute("""
+            SELECT hotel_star,
+                   AVG(CASE WHEN model_type LIKE 'MARE%' THEN rec_price END) as mare_avg
+            FROM hourly_runs
+            WHERE run_at >= datetime('now','-24 hours')
+            GROUP BY hotel_star
+        """).fetchall()
+        low_prices  = [r[1] for r in tier_rows if r[0] in (3, 4) and r[1]]
+        high_prices = [r[1] for r in tier_rows if r[0] in (5,)      and r[1]]
+        p23_direct  = sum(low_prices)  / len(low_prices)  if low_prices  else None
+        p45_direct  = sum(high_prices) / len(high_prices) if high_prices else None
+    else:
+        p23_direct = p45_direct = None
 
     conn.close()
 
@@ -378,8 +397,12 @@ def sys2_section() -> str:
     d = _m("DIRECTOR"); tot_d, tot_da = _t("DIRECTOR")
     s = _m("SELFACQ");  tot_s, tot_sa = _t("SELFACQ")
 
-    p23 = lsum[0] if lsum else None
-    p45 = lsum[1] if lsum else None
+    # 优先使用直接计算值；回退到 daily_summaries（如果非零）；最后用整体 MARE avg
+    p23_sum = lsum[0] if lsum and lsum[0] else None
+    p45_sum = lsum[1] if lsum and lsum[1] else None
+    mare_avg_all = m[2] if m else None
+    p23 = p23_direct or p23_sum or mare_avg_all
+    p45 = p45_direct or p45_sum or mare_avg_all
 
     # 寻客触发数据
     conn3 = _db(COLLECTOR_DB)

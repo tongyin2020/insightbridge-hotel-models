@@ -616,7 +616,9 @@ def _pw_launch_with_shifter(pw, locale: str = "zh-HK"):
         headless=True,
         proxy=proxy_cfg,
         args=["--no-sandbox", "--disable-blink-features=AutomationControlled",
-              "--disable-dev-shm-usage", "--disable-gpu"],
+              "--disable-dev-shm-usage", "--disable-gpu",
+              "--ignore-certificate-errors",   # 允许访问SSL证书过期的酒店官网
+              "--allow-insecure-localhost"],
     )
     ctx = browser.new_context(
         user_agent=random.choice(_PW_UA_POOL),
@@ -1043,6 +1045,8 @@ def _get_browser_context():
             "--disable-blink-features=AutomationControlled",
             "--disable-dev-shm-usage",
             "--disable-infobars",
+            "--ignore-certificate-errors",   # 允许访问SSL证书问题的酒店官网
+            "--allow-insecure-localhost",
         ],
     )
     ctx = browser.new_context(
@@ -1149,7 +1153,9 @@ def fetch_official_price(hotel: dict, checkin: str, sess: requests.Session) -> d
 
                 if synxis_html_cache:
                     html_prices = _extract_prices(synxis_html_cache)
-                    html_prices = [p for p in html_prices if 200 < p < 80000]
+                    _tier_floor = {"5_deluxe": 800, "5_star": 600, "4_star": 500, "3_star": 280}
+                    _floor = _tier_floor.get(hotel.get("tier", ""), 200)
+                    html_prices = [p for p in html_prices if _floor <= p < 80000]
                     if html_prices:
                         result.update({
                             "official_bar": html_prices[0],
@@ -1203,7 +1209,10 @@ def fetch_official_price(hotel: dict, checkin: str, sess: requests.Session) -> d
 
         if r and r.status_code == 200:
             page_prices = _extract_prices(r.text)
-            page_prices = [p for p in page_prices if 200 < p < 80000]
+            # 星级最低合理价格过滤（避免采集到目录起步价或无效价格）
+            _tier_floor = {"5_deluxe": 800, "5_star": 600, "4_star": 500, "3_star": 280}
+            _floor = _tier_floor.get(hotel.get("tier", ""), 200)
+            page_prices = [p for p in page_prices if _floor <= p < 80000]
             # 检查售罄
             sold_kws = ["sold out", "已售罄", "no availability", "unavailable",
                         "no rooms available", "sold_out", "客满"]
@@ -1306,7 +1315,9 @@ def fetch_official_price(hotel: dict, checkin: str, sess: requests.Session) -> d
                         pass
 
                 all_prices = sorted(set(captured_prices + page_prices))
-                all_prices = [p for p in all_prices if 200 < p < 80000]
+                _tier_floor = {"5_deluxe": 800, "5_star": 600, "4_star": 500, "3_star": 280}
+                _floor = _tier_floor.get(hotel.get("tier", ""), 200)
+                all_prices = [p for p in all_prices if _floor <= p < 80000]
 
                 max_bookable, sold_out_detected = _probe_inventory(page, html)
                 if max_bookable is not None:
@@ -1370,14 +1381,19 @@ def fetch_official_price(hotel: dict, checkin: str, sess: requests.Session) -> d
                         pass
 
                 page2.on("response", on_synxis_response)
-                page2.goto(ibe_direct_url, timeout=25000, wait_until="domcontentloaded")
+                page2.goto(ibe_direct_url, timeout=30000, wait_until="domcontentloaded")
                 try:
-                    page2.wait_for_load_state("networkidle", timeout=12000)
+                    page2.wait_for_load_state("networkidle", timeout=15000)
                 except PwTimeout:
-                    page2.wait_for_timeout(6000)
+                    page2.wait_for_timeout(8000)
+                # 额外等待SynXis价格异步加载
+                page2.wait_for_timeout(3000)
 
                 ibe_html = page2.content()
-                ibe_prices = [p for p in _extract_prices(ibe_html) if 200 < p < 80000]
+                _tier_floor = {"5_deluxe": 800, "5_star": 600, "4_star": 500, "3_star": 280}
+                _floor = _tier_floor.get(hotel.get("tier", ""), 200)
+                ibe_prices = [p for p in _extract_prices(ibe_html) if _floor <= p < 80000]
+                synxis_captured = [p for p in synxis_captured if _floor <= p < 80000]
                 all_synxis = sorted(set(synxis_captured + ibe_prices))
                 page2.close()
 
@@ -2419,7 +2435,8 @@ def run_collection(hotels: list[dict], label: str = "FULL"):
 
     conn.close()
     total = ok_count + fail_count
-    log.info(f"=== 采集完成 | 成功率 {ok_count}/{total} ({ok_count/total*100:.1f}%) | DB: {DB_PATH} ===")
+    pct = ok_count / total * 100 if total > 0 else 0.0
+    log.info(f"=== 采集完成 | 成功率 {ok_count}/{total} ({pct:.1f}%) | DB: {DB_PATH} ===")
 
 
 # ══════════════════════════════════════════════════════════════════════════
