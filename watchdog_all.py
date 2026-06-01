@@ -29,7 +29,7 @@ SYSTEMS = {
         "pid_file": "/Users/tongyin/Desktop/Hotel Model Rvisions/simulation_test/simulation.pid",
         "db":       "/Users/tongyin/Desktop/Hotel Model Rvisions/simulation_test/results.db",
         "db_table": "hourly_runs",
-        "log_out":  "/Users/tongyin/Desktop/Hotel Model Rvisions/simulation_test/sim_stdout.log",
+        "log_out":  "/Users/tongyin/Desktop/Hotel Model Rvisions/simulation_test/simulation_output.log",
         "total_h":  504,
     },
     "CrewAI版": {
@@ -60,7 +60,6 @@ logging.basicConfig(
     format="%(asctime)s [WATCHDOG] %(message)s",
     handlers=[
         logging.FileHandler(DESKTOP / "watchdog_all.log", encoding="utf-8"),
-        logging.StreamHandler(sys.stdout),
     ],
 )
 log = logging.getLogger(__name__)
