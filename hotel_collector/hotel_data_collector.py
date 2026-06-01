@@ -591,6 +591,46 @@ def make_session(country: str = "hk") -> requests.Session:
 
 
 # ══════════════════════════════════════════════════════════════════════════
+#  Playwright + Shifter 住宅代理上下文（所有 JS 渲染抓取复用此函数）
+# ══════════════════════════════════════════════════════════════════════════
+_PW_UA_POOL = [
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+]
+
+def _pw_launch_with_shifter(pw, locale: str = "zh-HK"):
+    """
+    创建带 Shifter 住宅代理的 Playwright 浏览器 + 上下文。
+    返回 (browser, ctx) — 调用方负责 ctx.close() + browser.close()。
+    若无代理凭证则降级为直连（测试模式）。
+    """
+    proxy_cfg = None
+    if SHIFTER_USER and SHIFTER_PASS:
+        proxy_cfg = {
+            "server":   f"http://{SHIFTER_HOST}:{SHIFTER_PORT}",
+            "username": SHIFTER_USER,
+            "password": SHIFTER_PASS,
+        }
+    browser = pw.chromium.launch(
+        headless=True,
+        proxy=proxy_cfg,
+        args=["--no-sandbox", "--disable-blink-features=AutomationControlled",
+              "--disable-dev-shm-usage", "--disable-gpu"],
+    )
+    ctx = browser.new_context(
+        user_agent=random.choice(_PW_UA_POOL),
+        locale=locale,
+        viewport={"width": 1440, "height": 900},
+        extra_http_headers={
+            "Accept-Language": "zh-HK,zh;q=0.9,en;q=0.8",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        },
+    )
+    return browser, ctx
+
+
+# ══════════════════════════════════════════════════════════════════════════
 #  数据库初始化
 # ══════════════════════════════════════════════════════════════════════════
 def init_db() -> sqlite3.Connection:
@@ -1405,50 +1445,126 @@ def fetch_official_price(hotel: dict, checkin: str, sess: requests.Session) -> d
 #  采集核心：OTA竞对价 + 库存信号（轨道B）
 # ══════════════════════════════════════════════════════════════════════════
 def fetch_ota_signals(hotel: dict, checkin: str, sess: requests.Session) -> dict:
-    """从Booking.com抓取OTA价格和库存标签"""
+    """
+    从 Booking.com 抓取 OTA 价格和库存标签。
+    主路径：Playwright + Shifter（绕过 Booking.com 202 bot challenge）
+    备用路径：requests.Session + Shifter（若 Playwright 不可用）
+    """
     result = {
         "booking_rate": None, "agoda_rate": None,
         "low_stock_flag": 0, "ota_discount": None,
         "booking_score": None, "notes_ota": ""
     }
     checkout = (datetime.strptime(checkin, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+    bcom_id = hotel.get("booking_com_id", "")
+    if not bcom_id:
+        return result
 
-    # Booking.com
+    slug = hotel["en"].lower().replace(" ", "-").replace("'", "").replace(",", "")
+    url = (f"https://www.booking.com/hotel/mo/{slug}.html"
+           f"?checkin={checkin}&checkout={checkout}"
+           f"&group_adults=2&no_rooms=1&selected_currency=MOP&lang=zh-hk")
+
+    # ── 主路径：Playwright + Shifter 代理（JS 渲染 + 绕过 bot 防护）──────
     try:
-        bcom_id = hotel.get("booking_com_id", "")
-        if bcom_id:
-            url = (
-                f"https://www.booking.com/hotel/mo/{hotel['en'].lower().replace(' ','-')}.html"
-                f"?checkin={checkin}&checkout={checkout}&group_adults=2&no_rooms=1"
-            )
+        with sync_playwright() as pw:
+            browser, ctx = _pw_launch_with_shifter(pw, locale="zh-HK")
+            page = ctx.new_page()
+            page.goto(url, timeout=28000, wait_until="domcontentloaded")
+            page.wait_for_timeout(3500)
+            content = page.content()
+            ctx.close(); browser.close()
+
+        soup = BeautifulSoup(content, "html.parser")
+
+        # 价格：多个选择器兜底（Booking.com 频繁改 class 名）
+        for sel in [
+            '[data-testid="price-and-discounted-price"]',
+            '[data-testid="recommended-units"] .prco-inline-block-maker-helper',
+            '.bui-price-display__value',
+            '[class*="prco-inline-block"]',
+            '.fcab3ed991',          # Booking.com 2025 class
+        ]:
+            for tag in soup.select(sel):
+                txt = re.sub(r'[^\d.]', '', tag.get_text())
+                if txt:
+                    try:
+                        p = float(txt)
+                        if 200 < p < 100000:
+                            result["booking_rate"] = p
+                            break
+                    except Exception:
+                        pass
+            if result["booking_rate"]:
+                break
+
+        # JSON-LD 价格备用
+        if result["booking_rate"] is None:
+            for m in re.finditer(r'<script[^>]*application/ld\+json[^>]*>(.*?)</script>',
+                                 content, re.DOTALL):
+                try:
+                    d = json.loads(m.group(1))
+                    if isinstance(d, dict) and d.get("@type") == "Hotel":
+                        offers = d.get("makesOffer", []) or d.get("offers", [])
+                        if isinstance(offers, dict): offers = [offers]
+                        for o in offers:
+                            price = o.get("price") or o.get("lowPrice")
+                            if price and float(price) > 200:
+                                result["booking_rate"] = float(price)
+                                break
+                    if result["booking_rate"]: break
+                except Exception:
+                    pass
+
+        # 低库存检测
+        page_text = content.lower()
+        if any(kw in page_text for kw in ["only 1 room", "只剩1間", "仅剩1间",
+                                           "last room", "high demand", "尚餘1間"]):
+            result["low_stock_flag"] = 1
+
+        # 评分提取
+        for sel in ['[data-testid="review-score-right-component"] .ac4a7896c7',
+                    '[data-testid="review-score"] .b5cd09854e',
+                    '.b5cd09854e', '.d10a6220b4']:
+            tag = soup.select_one(sel)
+            if tag:
+                try:
+                    result["booking_score"] = float(tag.get_text(strip=True).replace(",", "."))
+                    break
+                except Exception:
+                    pass
+
+        if result["booking_rate"]:
+            result["notes_ota"] += "bcom_pw_shifter_ok;"
+        else:
+            result["notes_ota"] += "bcom_pw_no_price;"
+
+    except Exception as e:
+        result["notes_ota"] += f"bcom_pw:{str(e)[:50]};"
+
+        # ── 备用路径：requests.Session + Shifter ────────────────────────
+        try:
             r = sess.get(url, timeout=15)
             if r.status_code == 200:
-                soup = BeautifulSoup(r.text, "html.parser")
-                # 提取价格
-                price_tags = soup.select('[data-testid="price-and-discounted-price"], .bui-price-display__value, .prco-inline-block-maker-helper')
+                soup2 = BeautifulSoup(r.text, "html.parser")
+                price_tags = soup2.select(
+                    '[data-testid="price-and-discounted-price"], '
+                    '.bui-price-display__value, .prco-inline-block-maker-helper'
+                )
                 for tag in price_tags:
                     txt = re.sub(r'[^\d.]', '', tag.get_text())
                     if txt:
                         try:
                             p = float(txt)
-                            if 100 < p < 100000:
+                            if 200 < p < 100000:
                                 result["booking_rate"] = p
                                 break
                         except Exception:
                             pass
-                # 低库存检测
-                page_text = r.text.lower()
-                if any(kw in page_text for kw in ["only 1 room", "只剩1間", "仅剩1间", "last room", "high demand"]):
-                    result["low_stock_flag"] = 1
-                # 评分提取
-                score_tag = soup.select_one('[data-testid="review-score-right-component"] .ac4a7896c7')
-                if score_tag:
-                    try:
-                        result["booking_score"] = float(score_tag.get_text().strip())
-                    except Exception:
-                        pass
-    except Exception as e:
-        result["notes_ota"] += f"bcom:{str(e)[:40]};"
+                if result["booking_rate"]:
+                    result["notes_ota"] += "bcom_req_fallback_ok;"
+        except Exception as e2:
+            result["notes_ota"] += f"bcom_req:{str(e2)[:30]};"
 
     return result
 
@@ -1503,22 +1619,16 @@ def fetch_inventory_signals(hotel: dict, checkin: str,
         return result
 
     try:
-        slug = hotel["en"].lower().replace(" ", "-").replace("'", "")
+        slug = hotel["en"].lower().replace(" ", "-").replace("'", "").replace(",", "")
         url = (f"https://www.booking.com/hotel/mo/{slug}.html"
                f"?checkin={checkin}&checkout={checkout}&group_adults=2&no_rooms=1&selected_currency=MOP")
 
         with sync_playwright() as pw:
-            # 直连（不走Shifter代理，原因见 _get_browser_context 注释）
-            browser = pw.chromium.launch(headless=True,
-                args=["--no-sandbox", "--disable-blink-features=AutomationControlled",
-                      "--disable-dev-shm-usage"])
-            ctx = browser.new_context(
-                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-                locale="zh-HK",
-            )
+            # 使用 Shifter 住宅代理（绕过 Booking.com 反爬）
+            browser, ctx = _pw_launch_with_shifter(pw, locale="zh-HK")
             page = ctx.new_page()
-            page.goto(url, timeout=25000, wait_until="domcontentloaded")
-            page.wait_for_timeout(3000)
+            page.goto(url, timeout=28000, wait_until="domcontentloaded")
+            page.wait_for_timeout(3500)
             content = page.content()
             ctx.close(); browser.close()
 
@@ -1552,6 +1662,250 @@ def fetch_inventory_signals(hotel: dict, checkin: str,
 
 
 # ══════════════════════════════════════════════════════════════════════════
+#  Agoda 单酒店 OTA 价格（Shifter requests，Agoda 防护弱于 Booking.com）
+# ══════════════════════════════════════════════════════════════════════════
+def fetch_agoda_ota(hotel: dict, checkin: str, sess: requests.Session) -> dict:
+    """
+    通过 Playwright + Shifter 抓取 Agoda 单家酒店最低价和评分。
+    Agoda 为纯 JS 渲染，必须用 Playwright；Shifter 代理绕过地区限制。
+    返回 {"agoda_rate": float|None, "agoda_score": float|None, "notes_agoda": str}
+    """
+    result = {"agoda_rate": None, "agoda_score": None, "notes_agoda": ""}
+    agoda_id = hotel.get("agoda_id", "")
+    if not agoda_id:
+        return result
+
+    checkout = (datetime.strptime(checkin, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+    # Agoda 澳门城市搜索（city=8646 = Macau）+ 酒店名称关键字
+    url = (f"https://www.agoda.com/zh-hk/search?city=8646"
+           f"&checkIn={checkin}&checkOut={checkout}&rooms=1&adults=2"
+           f"&selectedCurrency=MOP&textToSearch={requests.utils.quote(hotel['en'])}")
+
+    try:
+        with sync_playwright() as pw:
+            browser, ctx = _pw_launch_with_shifter(pw, locale="zh-HK")
+            page = ctx.new_page()
+            page.goto(url, timeout=30000, wait_until="domcontentloaded")
+            page.wait_for_timeout(5000)   # Agoda 价格延迟渲染，多等 2s
+
+            content = page.content()
+            ctx.close(); browser.close()
+
+        # 提取 MOP 价格
+        prices_mop = re.findall(r'MOP[\s\xa0]*([\d,]+)', content)
+        valid = []
+        for p in prices_mop:
+            try:
+                v = int(p.replace(",", ""))
+                if 200 < v < 80000:
+                    valid.append(v)
+            except Exception:
+                pass
+        if valid:
+            result["agoda_rate"] = float(min(valid))
+            result["notes_agoda"] = "agoda_pw_ok"
+
+        # JSON-LD 评分
+        for m in re.finditer(r'<script[^>]*application/ld\+json[^>]*>(.*?)</script>',
+                             content, re.DOTALL):
+            try:
+                d = json.loads(m.group(1))
+                if isinstance(d, dict):
+                    agg = d.get("aggregateRating", {})
+                    rv = agg.get("ratingValue")
+                    if rv:
+                        raw = float(rv)
+                        result["agoda_score"] = round(raw / 2 if raw > 5 else raw, 1)
+                        break
+            except Exception:
+                pass
+
+        # 正则评分备用（Agoda 数字评分形如 "9.2"）
+        if result["agoda_score"] is None:
+            m_r = re.search(r'"ratingValue"\s*:\s*"?(\d+\.?\d*)"?', content)
+            if m_r:
+                raw = float(m_r.group(1))
+                result["agoda_score"] = round(raw / 2 if raw > 5 else raw, 1)
+
+        if result["agoda_rate"]:
+            log.debug(f"  Agoda {hotel['cn']}: MOP {result['agoda_rate']:.0f} | ★{result['agoda_score']}")
+        else:
+            result["notes_agoda"] += "agoda_no_price;"
+
+    except Exception as e:
+        result["notes_agoda"] += f"agoda_pw:{str(e)[:50]};"
+
+    return result
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Trip.com / Ctrip 库存探测（Shifter 代理，中文标注"仅剩X间"明确）
+# ══════════════════════════════════════════════════════════════════════════
+_TRIP_URGENCY_PATS = [
+    (r'仅剩\s*(\d+)\s*间', 'zh'),
+    (r'只剩\s*(\d+)\s*间', 'zh'),
+    (r'尚余\s*(\d+)\s*间', 'zh'),
+    (r'最后\s*(\d+)\s*间', 'zh'),
+    (r'only\s+(\d+)\s+room', 'en'),
+    (r'(\d+)\s+rooms?\s+left', 'en'),
+    (r'last\s+(\d+)\s+room', 'en'),
+]
+
+def fetch_tripdotcom_inventory(hotel: dict, checkin: str,
+                                conn: sqlite3.Connection,
+                                sess: requests.Session) -> dict:
+    """
+    通过 Shifter 代理抓 Trip.com（携程国际版）搜索结果页，
+    提取该酒店的"仅剩X间"库存紧张信号。
+    与 Booking.com 形成双源交叉验证。
+    """
+    result = {"rooms_remaining": None, "avail_level": "available", "urgency_text": ""}
+    captured_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # Trip.com 日期格式：YYYYMMDD
+    checkin_tc  = checkin.replace("-", "")
+    checkout_tc = (datetime.strptime(checkin, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y%m%d")
+
+    try:
+        # Trip.com /hotels/list/?keyword=... 已验证可达（requests返回200）
+        # 但价格需 JS 渲染 → 使用 Playwright+Shifter
+        search_url = (
+            f"https://www.trip.com/hotels/list/"
+            f"?keyword={requests.utils.quote(hotel['en'])}"
+            f"&checkin={checkin_tc}&checkout={checkout_tc}&adult=2&children=0"
+        )
+
+        with sync_playwright() as pw:
+            browser, ctx = _pw_launch_with_shifter(pw, locale="zh-HK")
+            page = ctx.new_page()
+            page.goto(search_url, timeout=28000, wait_until="domcontentloaded")
+            page.wait_for_timeout(4000)
+            content = page.content()
+            ctx.close(); browser.close()
+
+        page_lower = content.lower()
+
+        # 尝试匹配库存紧张模式
+        for pat, _ in _TRIP_URGENCY_PATS:
+            m = re.search(pat, page_lower, re.IGNORECASE)
+            if m:
+                try:
+                    n = int(m.group(1))
+                    if n < 3:    level = "critical"
+                    elif n < 10: level = "low"
+                    elif n < 20: level = "moderate"
+                    else:        level = "available"
+                    urgency_raw = m.group(0)[:100]
+                    result = {"rooms_remaining": n, "avail_level": level,
+                              "urgency_text": urgency_raw}
+                    conn.execute("""
+                        INSERT INTO inventory_signals
+                            (hotel_id, checkin_date, captured_at, source, urgency_text, rooms_remaining, avail_level)
+                        VALUES (?,?,?,?,?,?,?)
+                    """, (hotel["id"], checkin, captured_at, "trip_com",
+                          urgency_raw, n, level))
+                    conn.commit()
+                    log.debug(f"  Trip.com 库存 {hotel['cn']} {checkin}: {level}({n}间)")
+                    return result
+                except Exception:
+                    pass
+
+        # 售罄检测
+        if any(k in page_lower for k in ["售罄", "已满", "sold out", "无房", "no availability"]):
+            result = {"rooms_remaining": 0, "avail_level": "sold_out", "urgency_text": "sold_out"}
+            conn.execute("""
+                INSERT INTO inventory_signals
+                    (hotel_id, checkin_date, captured_at, source, urgency_text, rooms_remaining, avail_level)
+                VALUES (?,?,?,?,?,?,?)
+            """, (hotel["id"], checkin, captured_at, "trip_com", "sold_out", 0, "sold_out"))
+            conn.commit()
+
+    except Exception as e:
+        log.debug(f"  trip.com inventory ({hotel['cn']}): {e}")
+
+    return result
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Agoda 评分采集（弥补亚洲酒店在 Google 评分不足的问题）
+# ══════════════════════════════════════════════════════════════════════════
+def fetch_agoda_rating(hotel: dict, conn: sqlite3.Connection,
+                       sess: requests.Session) -> dict:
+    """
+    通过 Shifter 代理从 Agoda 酒店页抓取综合评分（10分制→5分制）。
+    补充 fetch_google_rating() 对澳门亚洲酒店评分不足的问题。
+    评分结果写入 google_ratings 表（source=agoda_xxx）和 review_metrics 表。
+    """
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    agoda_id = hotel.get("agoda_id", "")
+    if not agoda_id:
+        return {"agoda_rating": None}
+
+    # 今天已有评分则跳过
+    row = conn.execute(
+        "SELECT google_rating FROM google_ratings WHERE hotel_id=? AND captured_date=?",
+        (hotel["id"], today_str)
+    ).fetchone()
+    if row and row[0]:
+        return {"agoda_rating": row[0]}
+
+    rating, count = None, None
+
+    try:
+        slug = hotel["en"].lower().replace(" ", "-").replace("'", "").replace(",", "")
+        url = f"https://www.agoda.com/en-gb/{slug}/{agoda_id}.html?selectedCurrency=MOP"
+        r = sess.get(url, timeout=20, headers={"Accept-Language": "zh-HK,zh;q=0.9,en;q=0.8"})
+        if r.status_code == 200:
+            # JSON-LD structured data
+            for m in re.finditer(r'<script[^>]*application/ld\+json[^>]*>(.*?)</script>',
+                                 r.text, re.DOTALL):
+                try:
+                    d = json.loads(m.group(1))
+                    if isinstance(d, dict):
+                        agg = d.get("aggregateRating", {})
+                        rv = agg.get("ratingValue")
+                        if rv:
+                            raw = float(rv)
+                            rating = round(raw / 2 if raw > 5 else raw, 1)
+                            count = int(agg.get("reviewCount", 0) or agg.get("ratingCount", 0))
+                            break
+                except Exception:
+                    pass
+
+            # 正则备用
+            if rating is None:
+                m_r = re.search(r'"ratingValue"\s*:\s*"?(\d+\.?\d*)"?', r.text)
+                if m_r:
+                    raw = float(m_r.group(1))
+                    rating = round(raw / 2 if raw > 5 else raw, 1)
+                    cm = re.search(r'"reviewCount"\s*:\s*(\d+)', r.text)
+                    count = int(cm.group(1)) if cm else None
+    except Exception as e:
+        log.debug(f"  agoda_rating ({hotel['cn']}): {e}")
+
+    if rating is not None:
+        try:
+            conn.execute("""
+                INSERT OR IGNORE INTO google_ratings
+                    (hotel_id, captured_date, google_rating, review_count, price_level, raw_snippet)
+                VALUES (?,?,?,?,?,?)
+            """, (hotel["id"], today_str, rating, count, None, f"agoda_{agoda_id}"))
+            # 同步写 review_metrics.agoda_score（10分制）
+            conn.execute("""
+                INSERT OR REPLACE INTO review_metrics
+                    (hotel_id, collected_at, agoda_score, review_count)
+                VALUES (?,?,?,?)
+            """, (hotel["id"], datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                  round(rating * 2, 1), count))
+            conn.commit()
+            log.debug(f"  Agoda rating {hotel['cn']}: {rating}★ ({count} reviews)")
+        except Exception:
+            pass
+
+    return {"agoda_rating": rating, "review_count": count}
+
+
+# ══════════════════════════════════════════════════════════════════════════
 #  功能2：Google Maps 评分采集
 # ══════════════════════════════════════════════════════════════════════════
 def fetch_google_rating(hotel: dict, conn: sqlite3.Connection,
@@ -1574,21 +1928,14 @@ def fetch_google_rating(hotel: dict, conn: sqlite3.Connection,
     bcom_id = hotel.get("booking_com_id", "")
     if bcom_id and rating is None:
         try:
-            slug = hotel["en"].lower().replace(" ", "-").replace("'", "")
+            slug = hotel["en"].lower().replace(" ", "-").replace("'", "").replace(",", "")
             url = f"https://www.booking.com/hotel/mo/{slug}.html?selected_currency=MOP"
             with sync_playwright() as pw:
-                browser = pw.chromium.launch(
-                    headless=True,
-                    args=["--no-sandbox", "--disable-blink-features=AutomationControlled",
-                          "--disable-dev-shm-usage"],
-                )
-                ctx = browser.new_context(
-                    user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-                    locale="zh-HK",
-                )
+                # 升级：使用 Shifter 代理（绕过 Booking.com bot 防护）
+                browser, ctx = _pw_launch_with_shifter(pw, locale="zh-HK")
                 page = ctx.new_page()
-                page.goto(url, timeout=25000, wait_until="domcontentloaded")
-                page.wait_for_timeout(2500)
+                page.goto(url, timeout=28000, wait_until="domcontentloaded")
+                page.wait_for_timeout(3000)
                 content = page.content()
                 ctx.close()
                 browser.close()
@@ -1919,10 +2266,16 @@ def run_collection(hotels: list[dict], label: str = "FULL"):
             (hotel["id"], today_str)
         ).fetchone()
 
-        # Google/TripAdvisor 评分（今天未采集时才跑）
+        # ── 评分采集：Booking.com（Playwright+Shifter）→ Agoda fallback ─────
         g_result = {"google_rating": None, "review_count": None}
         if not rating_already:
             g_result = fetch_google_rating(hotel, conn, sess)
+            # Booking.com 评分失败时，用 Agoda 评分补充（亚洲酒店 Agoda 覆盖更好）
+            if not g_result.get("google_rating"):
+                agoda_r = fetch_agoda_rating(hotel, conn, sess)
+                if agoda_r.get("agoda_rating"):
+                    g_result["google_rating"] = agoda_r["agoda_rating"]
+                    g_result["review_count"]  = agoda_r.get("review_count")
         g_str = f"★{g_result['google_rating']}" if g_result.get("google_rating") else "★N/A"
 
         # 评论情感（每天更新一次，已采集则跳过）
@@ -1954,13 +2307,32 @@ def run_collection(hotels: list[dict], label: str = "FULL"):
             time.sleep(delay)
 
             price_data = fetch_official_price(hotel, checkin, sess)
-            ota_data   = fetch_ota_signals(hotel, checkin, sess)
 
-            # 用 OTA 信号里的 booking_score 作为评分备用来源
+            # ── OTA 价格：Booking.com（Playwright+Shifter）+ Agoda 双源 ──
+            ota_data   = fetch_ota_signals(hotel, checkin, sess)
+            agoda_data = fetch_agoda_ota(hotel, checkin, sess)
+            # 将 Agoda 价格合并进 ota_data（agoda_rate 列）
+            if agoda_data.get("agoda_rate") and not ota_data.get("agoda_rate"):
+                ota_data["agoda_rate"] = agoda_data["agoda_rate"]
+            # Agoda 评分补充（若此轮拿到了评分）
+            if agoda_data.get("agoda_score") and not _rating_saved_this_hotel:
+                try:
+                    conn.execute("""
+                        INSERT OR IGNORE INTO google_ratings
+                            (hotel_id, captured_date, google_rating, review_count, price_level, raw_snippet)
+                        VALUES (?,?,?,?,?,?)
+                    """, (hotel["id"], today_str, agoda_data["agoda_score"], None, None,
+                          f"agoda_{hotel.get('agoda_id','')}"))
+                    conn.commit()
+                    _rating_saved_this_hotel = True
+                    g_str = f"★{agoda_data['agoda_score']}(agoda)"
+                except Exception:
+                    pass
+
+            # 用 Booking.com OTA 信号里的 booking_score 作评分备用
             if not _rating_saved_this_hotel and ota_data.get("booking_score"):
                 try:
                     raw_score = float(ota_data["booking_score"])
-                    # Booking.com 是10分制 → 转5分制
                     normalized = round(raw_score / 2 if raw_score > 5 else raw_score, 1)
                     conn.execute("""
                         INSERT OR IGNORE INTO google_ratings
@@ -1973,8 +2345,13 @@ def run_collection(hotels: list[dict], label: str = "FULL"):
                 except Exception:
                     pass
 
-            # OTA 库存信号（Playwright精准版，写入 inventory_signals 表）
+            # ── 库存信号：Booking.com（Playwright+Shifter）+ Trip.com 双源 ──
             inv_result = fetch_inventory_signals(hotel, checkin, conn, sess)
+            # Trip.com 补充（若 Booking.com 未检测到紧张库存）
+            if inv_result.get("avail_level") == "available":
+                trip_inv = fetch_tripdotcom_inventory(hotel, checkin, conn, sess)
+                if trip_inv.get("avail_level") not in ("available", ""):
+                    inv_result = trip_inv   # Trip.com 发现紧张信号则采纳
             inv_str = f"库存{inv_result['avail_level']}({inv_result['rooms_remaining']})" \
                       if inv_result.get("rooms_remaining") is not None else ""
 
@@ -1982,7 +2359,9 @@ def run_collection(hotels: list[dict], label: str = "FULL"):
 
             status_icon = "✅" if price_data["source_ok"] else "⚠️"
             bar_str = f"MOP {price_data['official_bar']:.0f}" if price_data.get("official_bar") else "N/A"
-            log.info(f"  {status_icon} {checkin}: BAR={bar_str} | OTA={ota_data.get('booking_rate','N/A')} | {inv_str} | {price_data.get('notes','')}")
+            bcom_str = f"MOP {ota_data['booking_rate']:.0f}" if ota_data.get("booking_rate") else "N/A"
+            agoda_str = f"MOP {ota_data['agoda_rate']:.0f}" if ota_data.get("agoda_rate") else "N/A"
+            log.info(f"  {status_icon} {checkin}: BAR={bar_str} | Bcom={bcom_str} | Agoda={agoda_str} | {inv_str} | {price_data.get('notes','')}")
 
             if price_data["source_ok"]:
                 ok_count += 1
