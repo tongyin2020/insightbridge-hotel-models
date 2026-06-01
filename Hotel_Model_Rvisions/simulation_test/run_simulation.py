@@ -1335,7 +1335,10 @@ def main():
                          "integration_score": result.get("integration_score"),
                          "crm_adjusted_price": crm_price},
                         crm_price, signal.get("demand_state", "NORMAL"),
-                        result.get("loyalty_tier"), str(result.get("upsell_revenue", 0)),
+                        ("High" if result.get("integration_score", 0) >= 0.7
+                         else "Medium" if result.get("integration_score", 0) >= 0.4
+                         else "Low"),
+                        str(result.get("upsell_revenue", 0)),
                         anomalies)
                 hour_results.append(("CRM", hotel["hotel_id"], crm_price, anomalies))
             except Exception as e:
@@ -1362,10 +1365,16 @@ def main():
                          "direct_wins_vs_ota": result.get("direct_wins_vs_ota"),
                          "direct_net_revenue": result.get("direct_net_revenue"),
                          "guest_segment": result.get("guest_segment"),
-                         "objective_mode": result.get("objective_mode")},
+                         "objective_mode": result.get("objective_mode"),
+                         "loyalty_tier": result.get("loyalty_tier"),
+                         "occupancy": result.get("occupancy")},
                         direct_price,
                         "HIGH" if result.get("demand_high") else "NORMAL",
-                        result.get("loyalty_tier"), "N/A",
+                        ("High" if (result.get("direct_wins_vs_ota") and
+                                    result.get("loyalty_tier") in ("platinum", "gold"))
+                         else "Medium" if result.get("direct_wins_vs_ota")
+                         else "Low"),
+                        "N/A",
                         anomalies)
                 hour_results.append(("ACQ", hotel["hotel_id"], direct_price, anomalies))
             except Exception as e:  # noqa
