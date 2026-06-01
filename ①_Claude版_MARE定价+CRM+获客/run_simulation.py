@@ -61,6 +61,21 @@ except ImportError:
     _DSEC_OK = False
     def _dsec_market_adr(month, star, conn, year=None): return 0.0
 
+try:
+    from elasticity_engine import optimize_price as _elasticity_optimize, ElasticityResult
+    _ELASTICITY_OK = True
+except ImportError:
+    _ELASTICITY_OK = False
+    # 降级：返回候选价本身，lift 保持规则值
+    def _elasticity_optimize(candidate_price, market_price, star, district="NAPE",
+                              demand_level="NORMAL", season="normal", hotel_id=None):
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            optimal_price=candidate_price, predicted_occupancy=0.72,
+            predicted_revpar=candidate_price*0.72, baseline_revpar=market_price*0.72,
+            true_lift_pct=0.0, elasticity_used=0.0, data_source="unavailable", search_steps=0
+        )
+
 
 def compute_dynamic_base_price(hotel_id: str, star: int,
                                 ota_snapshot_price: float,
@@ -884,7 +899,30 @@ def run_3star_test(hotel: dict, signal: dict, real_data: dict,
         # DSEC 澳门统计局月度需求信号
         dsec_market_occ=signal.get("dsec_market_occ", 0.0),
     )
-    return pe.recommend(req, hotel_settings=_hotel_settings(hotel))
+    result = pe.recommend(req, hotel_settings=_hotel_settings(hotel))
+
+    # ── Phase 2：价格弹性 RevPAR 最优化 ──────────────────────────────────────
+    if _ELASTICITY_OK and result.get("recommended_price", 0) > 0:
+        mkt_price = (float(sum(real_prices) / len(real_prices))
+                     if real_prices else hotel["base_price"])
+        er = _elasticity_optimize(
+            candidate_price = result["recommended_price"],
+            market_price    = mkt_price,
+            star            = hotel.get("star", 3),
+            district        = hotel.get("district", "NAPE"),
+            demand_level    = signal.get("demand_state", "NORMAL"),
+            season          = signal.get("season", "normal"),
+            hotel_id        = hotel.get("hotel_id"),
+        )
+        result["recommended_price"]   = er.optimal_price
+        result["predicted_occupancy"] = er.predicted_occupancy
+        result["predicted_revpar"]    = er.predicted_revpar
+        result["baseline_revpar"]     = er.baseline_revpar
+        result["expected_revenue_lift"] = f"+{er.true_lift_pct:.1f}%"
+        result["elasticity_used"]     = er.elasticity_used
+        result["elasticity_source"]   = er.data_source
+
+    return result
 
 
 # ── 4-5星自主获客模型测试 ──────────────────────────────────────────────────────
@@ -966,7 +1004,7 @@ def run_45star_test(hotel: dict, signal: dict, real_data: dict,
 
     direct_wins = direct_net_revenue >= ota_net_revenue * 0.92
 
-    return {
+    result = {
         "hotel_id": hotel["hotel_id"],
         "guest_segment": guest_profile["segment"],
         "loyalty_tier": guest_profile["loyalty"],
@@ -981,6 +1019,25 @@ def run_45star_test(hotel: dict, signal: dict, real_data: dict,
         "occupancy": occupancy,
         "demand_high": signal["is_holiday"] or signal["is_weekend"],
     }
+
+    # ── Phase 2：弹性引擎验证 SelfACQ 直销价格合理性 ─────────────────────────
+    if _ELASTICITY_OK and direct_offer_price > 0:
+        mkt_price = float(real_data.get("upper_tier_adr_real") or base)
+        er = _elasticity_optimize(
+            candidate_price = direct_offer_price,
+            market_price    = mkt_price,
+            star            = hotel.get("star", 4),
+            district        = hotel.get("district", "NAPE"),
+            demand_level    = "HIGH" if result["demand_high"] else "NORMAL",
+            season          = signal.get("season", "normal"),
+            hotel_id        = hotel.get("hotel_id"),
+        )
+        result["elasticity_validated_price"] = er.optimal_price
+        result["predicted_occupancy"]        = er.predicted_occupancy
+        result["revpar_lift_vs_market"]      = f"+{er.true_lift_pct:.1f}%"
+        result["elasticity_used"]            = er.elasticity_used
+
+    return result
 
 
 # ── DirectorAI CRM集成模型测试（3星）────────────────────────────────────────
