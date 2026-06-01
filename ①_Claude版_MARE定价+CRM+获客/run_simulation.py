@@ -271,15 +271,23 @@ def _load_brightdata_prices() -> dict:
                             if price_usd is None or usd < price_usd:
                                 price_usd = usd
 
-                # Trip.com 平铺价格字段（可能 CNY 或 USD）
+                # Trip.com 平铺价格字段（带货币字段校验，避免 USD/CNY 混淆）
                 if price_usd is None:
+                    raw_curr = h.get("currency", h.get("cur", "")).upper()
                     for field in ("discounted_price", "lowest_price", "min_price", "price"):
                         v = h.get(field)
                         if v:
                             try:
                                 fv = float(str(v).replace(",", "").strip())
                                 if fv > 0:
-                                    price_usd = fv / 7.2 if fv > 500 else fv
+                                    # 优先用 currency 字段判断；无字段时用阈值：
+                                    # CNY 单晚 < 1500 几乎不存在，> 1500 才按 CNY
+                                    if raw_curr == "CNY":
+                                        price_usd = fv / 7.2
+                                    elif raw_curr in ("USD", ""):
+                                        price_usd = fv   # 视为 USD
+                                    else:
+                                        price_usd = fv / 7.2 if fv > 1500 else fv
                                     break
                             except (ValueError, TypeError):
                                 pass
@@ -290,21 +298,23 @@ def _load_brightdata_prices() -> dict:
                         if not isinstance(room, dict):
                             continue
                         pi = room.get("price_info") or room.get("priceInfo") or {}
+                        raw_curr = pi.get("currency", "").upper()
                         for pf in ("discount_price", "price", "current_price"):
                             v = pi.get(pf)
                             if v:
                                 try:
                                     fv = float(str(v).replace(",", "").strip())
                                     if fv > 0:
-                                        price_usd = fv / 7.2
+                                        price_usd = fv / 7.2 if (raw_curr == "CNY" or fv > 1500) else fv
                                         break
                                 except (ValueError, TypeError):
                                     pass
                         if price_usd:
                             break
 
+                USD_TO_MOP = 8.06   # 统一汇率常量（澳门元/美元）
                 if price_usd and price_usd > 0:
-                    all_prices_mop.append(round(price_usd * 8))  # USD → MOP
+                    all_prices_mop.append(round(price_usd * USD_TO_MOP))  # USD → MOP
 
             if all_prices_mop:
                 sources.append("Trip.com" if is_trip else "Agoda")

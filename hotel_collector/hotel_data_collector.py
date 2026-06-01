@@ -773,12 +773,27 @@ def _extract_prices(text: str) -> list[float]:
         r'AverageNightlyRate|TotalNightlyRate|UndiscountedDailyRate'
     )
 
+    HKD_TO_MOP = 1.02   # 港元→澳门元汇率（1 HKD ≈ 1.02 MOP）
+
+    # ── 1a. HKD前缀单独提取并换算
+    for pat_hkd in [r'HK\$[\s,]*(\d[\d,]+(?:\.\d{1,2})?)',
+                    r'HKD[\s,]*(\d[\d,]+(?:\.\d{1,2})?)']:
+        try:
+            for m in re.finditer(pat_hkd, text, re.IGNORECASE):
+                try:
+                    raw = m.group(1).replace(",", "").replace(" ", "")
+                    p = float(raw) * HKD_TO_MOP    # 港元转澳门元
+                    if 100 < p < 100000 and not (1900 <= p <= 2030 and p == int(p)):
+                        prices.append(round(p, 1))
+                except Exception:
+                    pass
+        except re.error:
+            pass
+
     patterns = [
         # ── 1. 货币前缀（最可靠）
         r'MOP[\s,]*(\d[\d,]+(?:\.\d{1,2})?)',
         r'MOP\s*(\d[\d,]+)',
-        r'HK\$[\s,]*(\d[\d,]+(?:\.\d{1,2})?)',
-        r'HKD[\s,]*(\d[\d,]+(?:\.\d{1,2})?)',
         r'澳[門门][幣币元][\s]*(\d[\d,]+)',
 
         # ── 2. JSON/JS 键值（双引号）
@@ -2205,6 +2220,17 @@ def calc_price_trend(conn: sqlite3.Connection, hotel_id: str, checkin: str, curr
 def save_snapshot(conn: sqlite3.Connection, hotel: dict, checkin: str,
                   price_data: dict, ota_data: dict, snap_time: str):
     bar = price_data.get("official_bar")
+
+    # ── 星级最低价格校验（拒绝明显错误的抓取价格）───────────────────────────────
+    # 原因：部分酒店静态页面含积分/面积/楼层等3-4位数字被误识为房价
+    _STAR_MIN_VALID_BAR = {2: 200, 3: 350, 4: 650, 5: 900}
+    star = hotel.get("star", 3)
+    min_valid = _STAR_MIN_VALID_BAR.get(star, 200)
+    if bar is not None and bar < min_valid:
+        import logging as _log
+        _log.warning(f"[save_snapshot] {hotel['id']} {star}★ BAR={bar} < min {min_valid}，疑似抓取错误，已丢弃")
+        bar = None  # 拒绝写入，避免污染市场基准
+
     booking_rate = ota_data.get("booking_rate")
     ota_discount = None
     if bar and booking_rate and bar > 0:
