@@ -1,0 +1,27 @@
+# ── CrewAI 核心 ────────────────────────────────────────────────────
+crewai>=1.14.0
+crewai-tools>=1.14.0
+
+# ── 数据抓取 ────────────────────────────────────────────────────────
+firecrawl-py>=1.7.0
+playwright>=1.59.0
+
+# ── 监控 ────────────────────────────────────────────────────────────
+agentops>=0.3.19
+
+# ── 环境配置 ────────────────────────────────────────────────────────
+python-dotenv>=1.0.0
+requests>=2.31.0
+
+# ── LLM 提供商 SDK（按需安装，未配置对应Key则不使用）────────────────
+# Anthropic / Claude
+anthropic>=0.40.0
+
+# OpenAI / GPT-4
+openai>=1.50.0
+
+# Google Gemini（通过 LiteLLM 集成，无需单独SDK）
+# google-generativeai>=0.8.0   # 可选：直接调用Gemini API
+
+# LiteLLM（CrewAI底层路由，支持Perplexity/Gemini/Anthropic统一接口）
+litellm>=1.50.0
