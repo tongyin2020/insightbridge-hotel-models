@@ -59,6 +59,20 @@ except ImportError:
     def _dsec_season_mults(star, conn): return {"peak": 1.20, "shoulder": 1.0, "off_peak": 0.85}
     def _dsec_init_and_seed(conn): return 0
 
+try:
+    from elasticity_engine import optimize_price as _elasticity_optimize
+    _ELASTICITY_OK = True
+except ImportError:
+    _ELASTICITY_OK = False
+    def _elasticity_optimize(candidate_price, market_price, star, district="NAPE",
+                              demand_level="NORMAL", season="normal", hotel_id=None):
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            optimal_price=candidate_price, predicted_occupancy=0.72,
+            predicted_revpar=candidate_price*0.72, baseline_revpar=market_price*0.72,
+            true_lift_pct=0.0, elasticity_used=0.0, data_source="unavailable", search_steps=0
+        )
+
 # ── 自主获客模型（从 simulation_test 复用）─────────────────────────────────
 _SIM_DIR = Path("/Users/tongyin/Desktop/Hotel Model Rvisions/simulation_test")
 if str(_SIM_DIR) not in _sys.path:
@@ -84,9 +98,9 @@ UTC = timezone.utc
 REAL_DB_PATH = Path("/Users/tongyin/Desktop/InsightBridge_模型测试系统/hotel_collector/hotel_real_data.db")
 
 # ── 双层OTA折算系数（OTA价 × 此系数 ≈ 官网BAR）
-# 2-3-4★ 大众市场：OTA溢价约18%，折算系数0.85
+# 3-4★ 大众市场：OTA溢价约18%，折算系数0.85
 # 5★ 奢华市场：澳门五星直订大量补贴，OTA溢价约39%，折算系数0.72
-OTA_TO_BAR_MASS    = 0.85   # 2-3-4★ 大众市场
+OTA_TO_BAR_MASS    = 0.85   # 3-4★ 大众市场
 OTA_TO_BAR_LUXURY  = 0.72   # 5★ 奢华市场
 OTA_TO_BAR_RATIO   = OTA_TO_BAR_MASS   # 向后兼容保留
 
@@ -133,7 +147,7 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
 
     # ── 推导 tier ─────────────────────────────────────────────────────────
     if tier is None:
-        tier = {2: "2_star", 3: "3_star", 4: "4_star", 5: "5_star"}.get(star, "3_star")
+        tier = {3: "3_star", 4: "4_star", 5: "5_star"}.get(star, "3_star")
 
     # ── 星级差异化OTA折算系数 ────────────────────────────────────────────
     ratio = _ota_to_bar_ratio(star)
@@ -565,7 +579,6 @@ def _tier_guardrails(base_price: float, star: int) -> tuple[float, float]:
     """按星级计算合理的 floor/ceiling，避免硬编码 750/1015 导致低端酒店价格被截断。"""
     # 以 base_price 为锚点，星级越高弹性越大
     ratios = {
-        2: (0.82, 1.38),
         3: (0.83, 1.42),
         4: (0.80, 1.55),
         5: (0.75, 1.65),
@@ -771,9 +784,7 @@ def main() -> int:
         # 降级：保留原虚构名单（仅当hotel_roster_76导入失败时）
         import random as _rnd
         _rng = _rnd.Random(2026)
-        _spec_23 = [
-            ("NAPE","新口岸",2,22,420,660,45,150),("INNER","内港",2,25,370,610,40,130),
-            ("FCK","筷子基",2,15,390,640,40,120),("AREIA","黑沙环",2,10,380,620,35,110),
+        _spec_3 = [
             ("TAIPA","氹仔",3,25,580,950,80,220),("NAPE","新口岸",3,20,620,980,90,250),
             ("INNER","内港",3,18,560,900,75,200),("COT","路凼",3,10,700,1050,100,280),
         ]
@@ -785,14 +796,14 @@ def main() -> int:
             ("COL","路环",5,5,2000,4000,100,300),
         ]
         ALL_HOTELS_GPT = []
-        for dc,dcn,star,cnt,plo,phi,rlo,rhi in _spec_23 + _spec_45:
+        for dc,dcn,star,cnt,plo,phi,rlo,rhi in _spec_3 + _spec_45:
             for i in range(1, cnt+1):
                 ALL_HOTELS_GPT.append({
                     "hotel_id": f"MAC_{star}S_{dc}_{i:03d}",
                     "star": star,
                     "base_price": float(round(_rng.uniform(plo, phi) / (10 if star<=3 else 50)) * (10 if star<=3 else 50)),
                     "total_rooms": _rng.randint(rlo, rhi),
-                    "market_segment": "macau_luxury_direct" if star >= 4 else None,
+                    "market_segment": "macau_luxury_direct" if star >= 4 else "macau_3star_plus",
                 })
     print(f"[harness] 酒店名单: {len(ALL_HOTELS_GPT)}家 ({'澳门旅游局官方76家' if _ROSTER_OK else '虚构425家(降级)'})")
 
@@ -811,12 +822,12 @@ def main() -> int:
         ts = now_utc()
         snapshot = build_external_snapshot(ts)
 
-        # ── MARE：对全部425家酒店 × 所有场景 ────────────────────────────
+        # ── MARE：对全部76家酒店 × 所有场景 ─────────────────────────────
         for hotel in ALL_HOTELS_GPT:
             # 动态计算 base_price：历史BAR(60%) + OTA推算(40%) + 声誉修正
             # 有真实数据时自动切换，冷启动时用OTA估算；声誉冷启动时 rep_adj=0
             ota_ref = snapshot.competitor_price if hotel["star"] <= 3 else snapshot.upper_tier_adr
-            _tier = {2: "2_star", 3: "3_star", 4: "4_star", 5: "5_star"}.get(hotel["star"], "3_star")
+            _tier = {3: "3_star", 4: "4_star", 5: "5_star"}.get(hotel["star"], "3_star")
             base = compute_dynamic_base_price(
                 hotel_id=hotel["hotel_id"],
                 star=hotel["star"],
@@ -839,6 +850,33 @@ def main() -> int:
                     global_counts["mare_failures"] += 1
                 for issue in issues:
                     global_counts["issue_counts"][issue] = global_counts["issue_counts"].get(issue, 0) + 1
+
+                # ── Phase 2：弹性引擎 RevPAR 最优化 ──────────────────────────
+                if _ELASTICITY_OK and ok and result.get("recommended_price", 0) > 0:
+                    # 修正(2026-06-01)：使用 base（DSEC/历史-based，星级专属）作为市场基准
+                    # snapshot.competitor_price 是 makcorps 混合价，3★场景下=1120 MOP
+                    # 会导致弹性引擎搜索上限=1600，推出不合理的高价
+                    # base 已经是该酒店 DSEC+历史BAR 的加权均价，更能代表真实市场定位
+                    mkt_price = float(base if base and base > 0 else snapshot.competitor_price)
+                    _occ = sc.current_occupancy   # occupancy comes from scenario, not snapshot
+                    er = _elasticity_optimize(
+                        candidate_price = result["recommended_price"],
+                        market_price    = mkt_price,
+                        star            = hotel["star"],
+                        district        = hotel.get("district", "NAPE"),
+                        demand_level    = ("HIGH" if _occ > 0.80
+                                           else "LOW" if _occ < 0.55
+                                           else "NORMAL"),
+                        season          = ("peak" if snapshot.holiday > 0 else "normal"),
+                        hotel_id        = hotel["hotel_id"],
+                    )
+                    result["recommended_price"]   = er.optimal_price
+                    result["predicted_occupancy"] = er.predicted_occupancy
+                    result["predicted_revpar"]    = er.predicted_revpar
+                    result["expected_revenue_lift"] = f"+{er.true_lift_pct:.1f}%"
+                    result["elasticity_used"]     = er.elasticity_used
+                    result["elasticity_source"]   = er.data_source
+
                 write_jsonl(log_path, {
                     "timestamp_utc": ts.isoformat(),
                     "cycle": cycle + 1,
@@ -852,10 +890,10 @@ def main() -> int:
                     "result": result,
                 })
 
-        # ── Director：对全部425家酒店 × 所有场景 ────────────────────────
+        # ── Director：对全部76家酒店 × 所有场景 ─────────────────────────
         for hotel in ALL_HOTELS_GPT:
             ota_ref = snapshot.competitor_price if hotel["star"] <= 3 else snapshot.upper_tier_adr
-            _tier = {2: "2_star", 3: "3_star", 4: "4_star", 5: "5_star"}.get(hotel["star"], "3_star")
+            _tier = {3: "3_star", 4: "4_star", 5: "5_star"}.get(hotel["star"], "3_star")
             base = compute_dynamic_base_price(
                 hotel_id=hotel["hotel_id"],
                 star=hotel["star"],
@@ -891,7 +929,7 @@ def main() -> int:
                     "result": result,
                 })
 
-        # ── 自主获客集成模型（SELFACQ）：全部425家酒店 × 14标准场景 ───────────
+        # ── 自主获客集成模型（SELFACQ）：全部76家酒店 × 14标准场景 ────────────
         if _SELFACQ_OK and _SIM_SCENARIOS:
             # 将 ExternalSnapshot 转换为 run_45star_test 所需格式
             _signal = {
@@ -903,11 +941,11 @@ def main() -> int:
             }
             _real_data = {
                 "upper_tier_adr_real": snapshot.upper_tier_adr or 0.0,
-                "booking_prices_23": [],
+                "booking_prices_3": [],
             }
             for hotel in ALL_HOTELS_GPT:
                 ota_ref = snapshot.competitor_price if hotel["star"] <= 3 else snapshot.upper_tier_adr
-                _tier = {2: "2_star", 3: "3_star", 4: "4_star", 5: "5_star"}.get(hotel["star"], "3_star")
+                _tier = {3: "3_star", 4: "4_star", 5: "5_star"}.get(hotel["star"], "3_star")
                 base = compute_dynamic_base_price(
                     hotel_id=hotel["hotel_id"],
                     star=hotel["star"],
