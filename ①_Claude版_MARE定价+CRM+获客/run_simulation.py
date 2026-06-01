@@ -1065,15 +1065,15 @@ def write_daily_summary(conn: sqlite3.Connection, day: int):
 
     c = conn.cursor()
     rows_mare = c.execute(
-        "SELECT rec_price FROM hourly_runs WHERE model_type='MARE_23_STAR' AND sim_hour BETWEEN ? AND ?",
+        "SELECT rec_price FROM hourly_runs WHERE model_type IN ('MARE_23_STAR','MARE_ALL') AND sim_hour BETWEEN ? AND ?",
         (start_hour, end_hour - 1),
     ).fetchall()
     rows_crm = c.execute(
-        "SELECT rec_price FROM hourly_runs WHERE model_type='DIRECTOR_CRM_23_STAR' AND sim_hour BETWEEN ? AND ?",
+        "SELECT rec_price FROM hourly_runs WHERE model_type IN ('DIRECTOR_CRM_23_STAR','DIRECTOR_CRM_ALL') AND sim_hour BETWEEN ? AND ?",
         (start_hour, end_hour - 1),
     ).fetchall()
     rows_acq = c.execute(
-        "SELECT rec_price FROM hourly_runs WHERE model_type='SELFACQ_45_STAR' AND sim_hour BETWEEN ? AND ?",
+        "SELECT rec_price FROM hourly_runs WHERE model_type IN ('SELFACQ_45_STAR','SELFACQ_ALL') AND sim_hour BETWEEN ? AND ?",
         (start_hour, end_hour - 1),
     ).fetchall()
     anomaly_count = c.execute(
@@ -1253,7 +1253,7 @@ def main():
                          "ota_commission_saved": result.get("ota_commission_saved"),
                          "integration_score": result.get("integration_score"),
                          "crm_adjusted_price": crm_price},
-                        crm_price, result.get("psrs_status"),
+                        crm_price, signal.get("demand_state", "NORMAL"),
                         result.get("loyalty_tier"), str(result.get("upsell_revenue", 0)),
                         anomalies)
                 hour_results.append(("CRM", hotel["hotel_id"], crm_price, anomalies))
@@ -1352,9 +1352,9 @@ def main():
     print()
     c = conn.cursor()
     total = c.execute("SELECT COUNT(*) FROM hourly_runs").fetchone()[0]
-    mare_n = c.execute("SELECT COUNT(*) FROM hourly_runs WHERE model_type='MARE_23_STAR'").fetchone()[0]
-    crm_n  = c.execute("SELECT COUNT(*) FROM hourly_runs WHERE model_type='DIRECTOR_CRM_23_STAR'").fetchone()[0]
-    acq_n  = c.execute("SELECT COUNT(*) FROM hourly_runs WHERE model_type='SELFACQ_45_STAR'").fetchone()[0]
+    mare_n = c.execute("SELECT COUNT(*) FROM hourly_runs WHERE model_type IN ('MARE_23_STAR','MARE_ALL')").fetchone()[0]
+    crm_n  = c.execute("SELECT COUNT(*) FROM hourly_runs WHERE model_type IN ('DIRECTOR_CRM_23_STAR','DIRECTOR_CRM_ALL')").fetchone()[0]
+    acq_n  = c.execute("SELECT COUNT(*) FROM hourly_runs WHERE model_type IN ('SELFACQ_45_STAR','SELFACQ_ALL')").fetchone()[0]
     errors = c.execute("SELECT COUNT(*) FROM hourly_runs WHERE anomaly LIKE '%CRITICAL%'").fetchone()[0]
     warns  = c.execute("SELECT COUNT(*) FROM hourly_runs WHERE anomaly LIKE '%WARN%'").fetchone()[0]
     print(f"  总运行次数: {total:,}")
