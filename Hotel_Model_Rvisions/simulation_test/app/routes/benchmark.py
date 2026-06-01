@@ -7,6 +7,9 @@ comparison report.
 
 from __future__ import annotations
 
+import sqlite3
+from datetime import datetime
+from pathlib import Path
 from typing import List
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -14,6 +17,35 @@ from pydantic import BaseModel
 
 from app.auth import require_auth
 from app.services.pricing_engine import recommend
+
+# ── DSEC市场参照价（澳门统计局历史数据）──────────────────────────────────────
+_REAL_DB_PATH = Path("/Users/tongyin/Desktop/InsightBridge_模型测试系统/hotel_collector/hotel_real_data.db")
+
+def _get_dsec_market_price(star_rating: float) -> float | None:
+    """从price_snapshots读取DSEC模拟市场均价（近7天，按星级），
+    无数据时返回None，由调用方决定fallback。"""
+    star = int(round(star_rating))
+    star = max(3, min(5, star))  # 限定 3-5 星
+    if not _REAL_DB_PATH.exists():
+        return None
+    try:
+        conn = sqlite3.connect(str(_REAL_DB_PATH), timeout=5)
+        month = datetime.now().month
+        row = conn.execute("""
+            SELECT AVG(official_bar), COUNT(*)
+            FROM price_snapshots
+            WHERE star = ?
+              AND official_bar > 200
+              AND source_ok = 1
+              AND CAST(strftime('%m', checkin_date) AS INTEGER) = ?
+              AND snapshot_time >= datetime('now', '-7 days')
+        """, (star, month)).fetchone()
+        conn.close()
+        if row and row[1] and row[1] >= 3:
+            return float(row[0])
+    except Exception:
+        pass
+    return None
 
 router = APIRouter()
 
@@ -55,12 +87,16 @@ def _run_hotel(hotel: BenchmarkHotel, season: str, days: int) -> dict:
         base_price=hotel.base_price,
     )
 
+    # 优先使用DSEC历史均价作为竞争对手参照；无数据时退回 base_price × 1.05
+    dsec_price = _get_dsec_market_price(hotel.star_rating)
+    competitor_price = dsec_price if dsec_price else hotel.base_price * 1.05
+
     data = _DummyInput(
         hotel_id="benchmark",
         base_price=hotel.base_price,
         season=season,
         current_occupancy=hotel.current_occupancy,
-        competitor_price=hotel.base_price * 1.05,
+        competitor_price=competitor_price,
         competitor_availability=0.4,
         remaining_inventory=int(hotel.total_rooms * (1 - hotel.current_occupancy)),
         total_rooms=hotel.total_rooms,
