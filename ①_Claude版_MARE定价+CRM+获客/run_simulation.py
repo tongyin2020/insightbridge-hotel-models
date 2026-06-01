@@ -235,132 +235,185 @@ def _wecom_push_async(content: str):
     """已禁用 — 推送改为每日9:00统一由 daily_report.py 发出，此处不再实时推送"""
     return  # ← 已禁用频繁推送（2026-05-31）
 
-def _load_brightdata_prices() -> dict:
+_SHIFTER_MARKET_CACHE = Path(__file__).parent / "data" / "shifter_market_cache.json"
+_SHIFTER_MARKET_CACHE_TTL = 86400  # 24小时缓存（市场均价日更即可）
+
+def _fetch_shifter_market_prices() -> dict:
     """
-    读取最新 Bright Data 市场价格（Agoda + Trip.com 合并）。
-    返回 MOP 单位（×8 from USD），供模型直接与 MOP 定价对比。
+    用 Shifter 住宅代理爬取 Agoda + Trip.com 澳门全市场价格。
+    替代已停用的 BrightData 接口，提供相同的 {count/min/max/avg/p25/p75} 市场基准。
+
+    策略（按优先级）：
+    ① 本地24h缓存（data/shifter_market_cache.json）
+    ② price_snapshots 中 booking_rate/agoda_rate 列（hotel_data_collector 已采集）
+    ③ 实时 Agoda 澳门城市搜索页（Playwright + Shifter）
     """
+    import time as _time
+
+    # ── ① 检查本地缓存 ────────────────────────────────────────────────────────
     try:
-        import glob
-        pattern = str(Path(__file__).parent.parent /
-                      "partnership_docs" / "brightdata_results" / "*_macau_prices.json")
-        files = sorted(glob.glob(pattern))
-        if not files:
-            return {}
-        data = json.loads(Path(files[-1]).read_text(encoding="utf-8"))
-        all_prices_mop = []
-        sources = []
-
-        for label, records in data.items():
-            is_trip  = "trip"  in label.lower()
-            is_agoda = "agoda" in label.lower()
-            if not (is_trip or is_agoda):
-                continue
-
-            for h in records:
-                price_usd = None
-
-                # Agoda 嵌套定价（USD）
-                for room in (h.get("pricing") or []):
-                    for offer in (room.get("offers") or []):
-                        p = offer.get("price", {}) or {}
-                        v = p.get("final_price_per_night") or p.get("initial_price_per_night")
-                        curr = p.get("currency", "USD")
-                        if v and float(v) > 0:
-                            usd = float(v) if curr == "USD" else float(v) / 8
-                            if price_usd is None or usd < price_usd:
-                                price_usd = usd
-
-                # Trip.com 平铺价格字段（带货币字段校验，避免 USD/CNY 混淆）
-                if price_usd is None:
-                    raw_curr = h.get("currency", h.get("cur", "")).upper()
-                    for field in ("discounted_price", "lowest_price", "min_price", "price"):
-                        v = h.get(field)
-                        if v:
-                            try:
-                                fv = float(str(v).replace(",", "").strip())
-                                if fv > 0:
-                                    # 优先用 currency 字段判断；无字段时用阈值：
-                                    # CNY 单晚 < 1500 几乎不存在，> 1500 才按 CNY
-                                    if raw_curr == "CNY":
-                                        price_usd = fv / 7.2
-                                    elif raw_curr in ("USD", ""):
-                                        price_usd = fv   # 视为 USD
-                                    else:
-                                        price_usd = fv / 7.2 if fv > 1500 else fv
-                                    break
-                            except (ValueError, TypeError):
-                                pass
-
-                # Trip.com 嵌套 room_info
-                if price_usd is None:
-                    for room in (h.get("room_info") or h.get("rooms_info") or []):
-                        if not isinstance(room, dict):
-                            continue
-                        pi = room.get("price_info") or room.get("priceInfo") or {}
-                        raw_curr = pi.get("currency", "").upper()
-                        for pf in ("discount_price", "price", "current_price"):
-                            v = pi.get(pf)
-                            if v:
-                                try:
-                                    fv = float(str(v).replace(",", "").strip())
-                                    if fv > 0:
-                                        price_usd = fv / 7.2 if (raw_curr == "CNY" or fv > 1500) else fv
-                                        break
-                                except (ValueError, TypeError):
-                                    pass
-                        if price_usd:
-                            break
-
-                USD_TO_MOP = 8.06   # 统一汇率常量（澳门元/美元）
-                if price_usd and price_usd > 0:
-                    all_prices_mop.append(round(price_usd * USD_TO_MOP))  # USD → MOP
-
-            if all_prices_mop:
-                sources.append("Trip.com" if is_trip else "Agoda")
-
-        if not all_prices_mop:
-            return {}
-        all_prices_mop.sort()
-        return {
-            "count":   len(all_prices_mop),
-            "min":     all_prices_mop[0],
-            "max":     all_prices_mop[-1],
-            "avg":     round(sum(all_prices_mop) / len(all_prices_mop)),
-            "p25":     all_prices_mop[len(all_prices_mop) // 4],
-            "p75":     all_prices_mop[len(all_prices_mop) * 3 // 4],
-            "date":    Path(files[-1]).stem.split("_")[0],
-            "sources": "+".join(sorted(set(sources))),
-        }
+        if _SHIFTER_MARKET_CACHE.exists():
+            cached = json.loads(_SHIFTER_MARKET_CACHE.read_text(encoding="utf-8"))
+            age = _time.time() - cached.get("_ts", 0)
+            if age < _SHIFTER_MARKET_CACHE_TTL:
+                return {k: v for k, v in cached.items() if not k.startswith("_")}
     except Exception:
+        pass
+
+    all_prices_mop: list[float] = []
+    sources: list[str] = []
+
+    # ── ② 从 price_snapshots 读取已采集 OTA 价格 ────────────────────────────
+    try:
+        if _REAL_DB_PATH.exists():
+            conn = sqlite3.connect(str(_REAL_DB_PATH), timeout=5)
+            # 取最近7天的 booking_rate 和 agoda_rate（不含异常低价）
+            rows = conn.execute("""
+                SELECT booking_rate, agoda_rate, star
+                FROM price_snapshots
+                WHERE snapshot_time >= datetime('now','-7 days')
+                  AND (booking_rate > 200 OR agoda_rate > 200)
+            """).fetchall()
+            conn.close()
+            for bcom, agoda, star in rows:
+                if bcom and bcom > 200:
+                    all_prices_mop.append(float(bcom))
+                    if "Booking.com" not in sources:
+                        sources.append("Booking.com")
+                if agoda and agoda > 200:
+                    all_prices_mop.append(float(agoda))
+                    if "Agoda" not in sources:
+                        sources.append("Agoda")
+    except Exception:
+        pass
+
+    # ── ③ 若 OTA 列为空，用 Shifter 实时爬 Agoda 澳门城市搜索 ────────────────
+    if not all_prices_mop:
+        try:
+            import os as _os
+            from datetime import date as _date, timedelta as _td
+            from playwright.sync_api import sync_playwright
+
+            _su = _os.getenv("SHIFTER_USER", "")
+            _sp = _os.getenv("SHIFTER_PASS", "")
+            proxy_cfg = ({"server": "http://p.shifter.io:443",
+                          "username": _su, "password": _sp}
+                         if _su and _sp else None)
+
+            checkin  = (_date.today() + _td(days=1)).isoformat()
+            checkout = (_date.today() + _td(days=2)).isoformat()
+
+            # Agoda 澳门全市搜索（city=8646 = Macau）
+            agoda_url = (
+                f"https://www.agoda.com/zh-hk/search"
+                f"?city=8646&checkIn={checkin}&checkOut={checkout}"
+                f"&rooms=1&adults=2&selectedCurrency=MOP"
+            )
+            with sync_playwright() as pw:
+                browser = pw.chromium.launch(
+                    headless=True, proxy=proxy_cfg,
+                    args=["--no-sandbox","--disable-blink-features=AutomationControlled",
+                          "--disable-dev-shm-usage"],
+                )
+                ctx = browser.new_context(
+                    user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                               "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+                    locale="zh-HK", viewport={"width": 1440, "height": 900},
+                )
+                page = ctx.new_page()
+                page.goto(agoda_url, wait_until="domcontentloaded", timeout=35000)
+                page.wait_for_timeout(4000)
+                html = page.content()
+                browser.close()
+
+            # 从 Agoda 搜索结果提取 MOP 价格
+            agoda_prices = []
+            for m in re.finditer(r"MOP[\s\xa0]*([\d,]+)", html):
+                try:
+                    p = int(m.group(1).replace(",", ""))
+                    if 200 < p < 20000:
+                        agoda_prices.append(p)
+                except (ValueError, TypeError):
+                    pass
+            if agoda_prices:
+                all_prices_mop.extend(agoda_prices)
+                sources.append("Agoda(live)")
+
+        except Exception as _e:
+            logger.warning(f"Shifter market sweep failed: {_e}")
+
+    # ── 兜底：若所有来源均失败，返回空 ────────────────────────────────────────
+    if not all_prices_mop:
         return {}
+
+    all_prices_mop.sort()
+    n = len(all_prices_mop)
+    result = {
+        "count":   n,
+        "min":     all_prices_mop[0],
+        "max":     all_prices_mop[-1],
+        "avg":     round(sum(all_prices_mop) / n),
+        "p25":     all_prices_mop[n // 4],
+        "p75":     all_prices_mop[n * 3 // 4],
+        "date":    datetime.now().strftime("%Y-%m-%d"),
+        "sources": "+".join(sorted(set(sources))),
+    }
+
+    # 写入本地缓存
+    try:
+        import time as _time2
+        _SHIFTER_MARKET_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        _SHIFTER_MARKET_CACHE.write_text(
+            json.dumps({**result, "_ts": _time2.time()}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+    return result
 
 def _load_market_benchmarks_by_star() -> dict:
     """
-    从 price_snapshots 按星级分类计算真实市场基准价（Option A）。
+    从 price_snapshots 按星级分类计算真实市场基准价。
     返回：
       mass    — 3★+4★ 大众市场均价（MARE/CRM 对比基准）
       luxury  — 5★ 豪华市场均价（DirectorAI/SelfACQ 对比基准）
     每个子字典含 count/avg/min/max/p25/p75 字段。
+
+    数据来源优先级：
+    ① price_snapshots.official_bar（hotel_data_collector 实时采集）
+    ② price_snapshots.booking_rate / agoda_rate（Shifter OTA采集）
+    ③ _fetch_shifter_market_prices()（Agoda全市场扫描，24h缓存）
     """
     result = {"mass": {}, "luxury": {}}
     if not _REAL_DB_PATH.exists():
+        # 若数据库不存在，直接走 Shifter 市场扫描
+        shifter_bm = _fetch_shifter_market_prices()
+        if shifter_bm.get("avg", 0) > 0:
+            result["mass"] = shifter_bm   # 全市混合均价作为 mass 基准
         return result
     try:
         conn = sqlite3.connect(str(_REAL_DB_PATH), timeout=5)
 
         def _seg_stats(star_filter: str) -> dict:
+            # ── 优先：官网 BAR（已经过 A-1 星级验证过滤）
             rows = conn.execute(f"""
-                SELECT official_bar
-                FROM price_snapshots
-                WHERE {star_filter}
-                  AND official_bar > 200
-                  AND source_ok = 1
+                SELECT official_bar FROM price_snapshots
+                WHERE {star_filter} AND official_bar > 200 AND source_ok = 1
                 ORDER BY official_bar
             """).fetchall()
-            if not rows:
+            # ── 补充：OTA 采集价（Shifter Booking.com / Agoda）
+            ota_rows = conn.execute(f"""
+                SELECT booking_rate FROM price_snapshots
+                WHERE {star_filter} AND booking_rate > 200
+                UNION ALL
+                SELECT agoda_rate   FROM price_snapshots
+                WHERE {star_filter} AND agoda_rate   > 200
+            """).fetchall()
+            prices = [r[0] for r in rows] + [r[0] for r in ota_rows]
+            if not prices:
                 return {}
-            prices = [r[0] for r in rows]
+            prices.sort()
             n = len(prices)
             return {
                 "count": n,
@@ -374,6 +427,12 @@ def _load_market_benchmarks_by_star() -> dict:
         result["mass"]   = _seg_stats("star IN (3, 4)")
         result["luxury"] = _seg_stats("star = 5")
         conn.close()
+
+        # ── ③ 若 price_snapshots 覆盖不足，补充 Shifter 全市场扫描 ────────────
+        if not result["mass"] or result["mass"].get("count", 0) < 3:
+            shifter_bm = _fetch_shifter_market_prices()
+            if shifter_bm.get("avg", 0) > 0:
+                result["mass"] = shifter_bm
     except Exception:
         pass
     return result

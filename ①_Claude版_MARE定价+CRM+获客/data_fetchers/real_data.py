@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import time
@@ -31,10 +32,29 @@ from typing import Optional
 import logging
 
 import requests
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
 logger = logging.getLogger(__name__)
 
 CACHE_DB = Path(__file__).parent.parent / "data_cache.db"
+
+# ── Shifter 代理配置（绕过 Cloudflare / Booking.com 机器人检测）────────────────
+_SHIFTER_HOST = "p.shifter.io"
+_SHIFTER_PORT = 443
+_SHIFTER_USER = os.getenv("SHIFTER_USER", "")
+_SHIFTER_PASS = os.getenv("SHIFTER_PASS", "")
+
+def _shifter_proxy_cfg() -> dict | None:
+    """返回 Playwright proxy 配置字典；未配置 Shifter 时返回 None（降级到无代理）"""
+    if _SHIFTER_USER and _SHIFTER_PASS:
+        return {
+            "server":   f"http://{_SHIFTER_HOST}:{_SHIFTER_PORT}",
+            "username": _SHIFTER_USER,
+            "password": _SHIFTER_PASS,
+        }
+    return None
 CACHE_TTL_SECONDS = 7200  # 2小时缓存
 
 
@@ -214,37 +234,54 @@ def fetch_booking_prices(checkin: str, checkout: str) -> dict:
     try:
         from playwright.sync_api import sync_playwright
 
+        proxy_cfg = _shifter_proxy_cfg()   # Shifter 住宅代理，绕过 Cloudflare
+
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page(
-                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            browser = p.chromium.launch(
+                headless=True,
+                proxy=proxy_cfg,
+                args=["--no-sandbox", "--disable-blink-features=AutomationControlled",
+                      "--disable-dev-shm-usage", "--disable-gpu"],
             )
+            ctx = browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+                ),
+                locale="zh-HK",
+                viewport={"width": 1440, "height": 900},
+                extra_http_headers={
+                    "Accept-Language": "zh-HK,zh;q=0.9,en;q=0.8",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                },
+            )
+            page = ctx.new_page()
 
             def _parse_mop_prices(html: str, min_price=100, max_price=20000) -> list[int]:
                 raw = re.findall(r"MOP[\s\xa0]*([\d,]+)", html)
                 return sorted(set(int(p.replace(",", "")) for p in raw if min_price < int(p.replace(",", "")) < max_price))
 
-            # 2-3星
+            # 2-3星（selected_currency=MOP 确保返回澳门元）
             url_23 = (
                 f"https://www.booking.com/searchresults.html?ss=Macau"
                 f"&checkin={checkin}&checkout={checkout}"
-                f"&nflt=class%3D2%3Bclass%3D3&lang=en-us"
+                f"&nflt=class%3D2%3Bclass%3D3&lang=zh-hk&selected_currency=MOP"
             )
-            page.goto(url_23, wait_until="domcontentloaded", timeout=25000)
+            page.goto(url_23, wait_until="domcontentloaded", timeout=30000)
             page.wait_for_timeout(4000)
             html_23 = page.content()
 
             prices_23 = _parse_mop_prices(html_23, 100, 3000)
-            count_match = re.findall(r"(\d+)\s*properties?\s*found", html_23, re.I)
+            count_match = re.findall(r"(\d+)\s*(?:properties?|酒店)\s*found", html_23, re.I)
             count_23 = int(count_match[0]) if count_match else len(prices_23)
 
             # 4-5星（用于upper_tier_adr）
             url_45 = (
                 f"https://www.booking.com/searchresults.html?ss=Macau"
                 f"&checkin={checkin}&checkout={checkout}"
-                f"&nflt=class%3D4%3Bclass%3D5&lang=en-us"
+                f"&nflt=class%3D4%3Bclass%3D5&lang=zh-hk&selected_currency=MOP"
             )
-            page.goto(url_45, wait_until="domcontentloaded", timeout=25000)
+            page.goto(url_45, wait_until="domcontentloaded", timeout=30000)
             page.wait_for_timeout(3000)
             html_45 = page.content()
             prices_45 = _parse_mop_prices(html_45, 200, 15000)
@@ -459,8 +496,8 @@ def get_all_real_signals(checkin: str, checkout: str) -> dict:
             "flight_ferry": "TurboJET + CotaiWaterJet 双源 (real-time)",
             "event_ticket_sales": "IR活动日历 Galaxy/Wynn/MGM/CCM (real-time, 6h cache)",
             "visitors_stats": "DSEC monthly report (encoded)",
-            "competitor_price": "Booking.com (real-time, Playwright)",
-            "upper_tier_adr": "Booking.com (real-time, Playwright)",
+            "competitor_price": "Booking.com (real-time, Playwright+Shifter)",
+            "upper_tier_adr": "Booking.com (real-time, Playwright+Shifter)",
             "ota_booking_pace": mc.get("source", "no_key"),  # ✅真实 or 场景fallback
             "border_flow": "SIMULATED (no real-time source exists)",
             "zhuhai_saturation": "SIMULATED (no source available)",
