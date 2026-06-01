@@ -67,7 +67,7 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
                                 month: int = None) -> float:
     """
     动态计算 base_price，替代随机数方式：
-      Step A — 历史参考价 = DSEC澳门统计局(85%) + MakCorps实时OTA(15%)
+      Step A — 历史参考价 = 真实官网BAR(85%) + DSEC统计局(15%) | OTA竞对价备用
               再按星级权重与实时OTA推算混合（5★偏历史70%，2-4★偏OTA45%）
       Step B — 星级范围截断
       Step C — 声誉情感修正 rep_adj ∈ [-0.17, +0.17]
@@ -687,6 +687,7 @@ def run_23star_test(hotel: dict, signal: dict, real_data: dict,
 
     req = RecommendationRequest(
         hotel_id=hotel["hotel_id"],
+        hotel_star=hotel.get("star", 3),   # 竞对权重差异化：2-4★ vs 5★
         season=signal["season"],
         base_price=hotel["base_price"],
         # 外部实时信号
@@ -1086,7 +1087,7 @@ def main():
                  weather_c, int(signal["is_holiday"]), int(signal["is_weekend"])),
             )
 
-        # ── 动态base_price：DSEC×85% + MakCorps×15% 混合（每小时更新）──────
+        # ── 动态base_price：真实BAR/OTA + DSEC背景，MakCorps已停用 ───────────
         cur_month = run_start.month
         # 从real_data获取市场OTA参考价（作为实时OTA输入）
         _ota_ref_23 = float(sum(real_data["booking_prices_23"]) / len(real_data["booking_prices_23"])) \

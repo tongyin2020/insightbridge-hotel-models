@@ -362,11 +362,13 @@ def score_event_markdown(markdown: str) -> tuple[float, float]:
 def makcorps_market_snapshot() -> tuple[bool, dict[str, float], float, float]:
     """
     查询 MakCorps 多OTA价格对比。
-    使用预验证的澳门酒店ID（跳过不稳定的 /mapping 端点）。
-    澳门代表性酒店ID（已验证）：
-      Studio City=8331360, JW Marriott=7807481, Sofitel=664580
-      Royal Macau=306251,  Harbourview=7810592, Okura=2091060
+    ⚠️ MakCorps订阅已到期/即将到期，停止API调用，直接返回fallback。
+    fallback价格来自澳门DSEC统计局历史均价（已在build_external_snapshot中处理）。
     """
+    # MakCorps订阅到期，不再调用API — fallback由 build_external_snapshot 处理
+    return False, {}, 0.0, 0.0
+
+    # ── 以下代码保留备用，如恢复订阅可删除上方 return ──────────────────
     key = os.getenv("MAKCORPS_API_KEY", "").strip()
     if not key:
         return False, {}, 0.0, 0.0

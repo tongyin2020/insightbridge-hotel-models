@@ -108,9 +108,10 @@ def demand_adjustment(score):
     return 0.12
 
 
-def competition_adjustment(state, competitor_price, our_base, competitor_availability):
-    # Midscale Macau pricing is competitor-sensitive, but we cap the adjustment
-    # so a bad scrape cannot dominate the entire recommendation.
+def competition_adjustment(state, competitor_price, our_base, competitor_availability, hotel_star: int = 3):
+    # 差异化竞对权重：
+    #   MARE 2-3-4★：淡季不跟价格战(LOW=0.40)，旺季锚定自身(HIGH=0.25)，平季中性(0.50)
+    #   DirectorAI 5★：几乎忽略竞对，品牌溢价优先(LOW=0.15, NORMAL=0.30, HIGH=0.20)
     if competitor_price is None or competitor_price <= 0:
         return 0.0
 
@@ -119,7 +120,12 @@ def competition_adjustment(state, competitor_price, our_base, competitor_availab
     gap_ratio = (safe_comp - safe_base) / safe_base
     availability = _clamp(float(competitor_availability or 0.0), 0.0, 1.0)
     availability_boost = 0.015 if availability > 0.55 else 0.0
-    weight = 0.25 if state == "HIGH" else 0.40 if state == "LOW" else 0.50
+
+    if hotel_star >= 5:   # DirectorAI 5★奢华市场：几乎忽略竞对OTA
+        weight = 0.20 if state == "HIGH" else 0.15 if state == "LOW" else 0.30
+    else:                 # MARE 2-3-4★大众市场：淡季不跟价格战
+        weight = 0.25 if state == "HIGH" else 0.40 if state == "LOW" else 0.50
+
     return round(_clamp(gap_ratio * weight + availability_boost, -0.15, 0.15), 4)
 
 
@@ -336,8 +342,9 @@ def recommend(data, hotel_settings=None):
     current_occupancy = _clamp(getattr(data, "current_occupancy", 0.0), 0.0, 1.0)
     elasticity_signal = _clamp(getattr(data, "elasticity_signal", 0.0), -1.0, 1.0)
 
-    c_adj = competition_adjustment(state, data.competitor_price, seasonal_base, competitor_availability)
-    reasons_list.append({"title": "Market Positioning", "detail": f"Competitor price MOP {data.competitor_price:.0f} influences market alignment."})
+    hotel_star = int(getattr(data, "hotel_star", 3))
+    c_adj = competition_adjustment(state, data.competitor_price, seasonal_base, competitor_availability, hotel_star)
+    reasons_list.append({"title": "Market Positioning", "detail": f"Competitor price MOP {data.competitor_price:.0f} influences market alignment (star={hotel_star})."})
 
     crm_adj, crm_reason = crm_adjustment(
         guest_segment=getattr(data, "guest_segment", "unknown"),

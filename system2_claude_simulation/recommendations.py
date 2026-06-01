@@ -5,6 +5,7 @@ from pydantic import BaseModel, field_validator
 
 class RecommendationRequest(BaseModel):
     hotel_id: str
+    hotel_star: int = 3   # 用于竞对权重差异化：2-4★ MARE / 5★ DirectorAI
     season: str
     base_price: float
     holiday: float = 0
