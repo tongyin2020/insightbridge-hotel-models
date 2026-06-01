@@ -68,7 +68,6 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
     """
     动态计算 base_price，替代随机数方式：
       Step A — 历史参考价（四层优先级，MakCorps已停用）：
-               层0(新) makcorps_snapshots OTA均价（每小时采集，优先级最高）
                层1 Shifter真实BAR(85%) + DSEC(15%) → 混合OTA权重
                层2 Shifter OTA折算BAR(85%) + DSEC(15%) → 混合OTA权重
                层3 冷启动：DSEC统计局(100%)，不与MakCorps fallback混合
@@ -92,23 +91,13 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
     w_ota = _OTA_WEIGHT.get(star, 0.45)
 
     real_bar_avg  = None   # 来自hotel_real_data.db price_snapshots（轨道A：官网BAR）
-    real_ota_avg  = None   # 来自 makcorps_snapshots（优先） or price_snapshots（轨道B）
+    real_ota_avg  = None   # 来自hotel_real_data.db price_snapshots（轨道B：OTA竞对）
     dsec_adr_ref  = 0.0
     shared_conn   = None
 
     if _REAL_DB_PATH.exists():
         try:
             shared_conn = sqlite3.connect(str(_REAL_DB_PATH), timeout=5)
-
-            # ── 层0（新）：优先读取 makcorps_snapshots OTA均价（每小时采集，数据密度高）
-            row_mc = shared_conn.execute("""
-                SELECT avg_ota_price FROM makcorps_snapshots
-                WHERE hotel_id = ? AND api_ok = 1 AND avg_ota_price > 200
-                  AND snapshot_time >= datetime('now', '-48 hours')
-                ORDER BY snapshot_time DESC LIMIT 1
-            """, (hotel_id,)).fetchone()
-            if row_mc and row_mc[0]:
-                real_ota_avg = float(row_mc[0])  # 覆盖 price_snapshots.booking_rate
 
             # ── 层1：Shifter采集的真实官网BAR（最近7天快照，同月份入住日期）
             row = shared_conn.execute("""
@@ -123,18 +112,17 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
             if row and row[1] and row[1] >= 1:
                 real_bar_avg = float(row[0])
 
-            # ── 层2备用：Booking.com OTA竞对价（仅当 makcorps_snapshots 无数据时）
-            if real_ota_avg is None:
-                row_ota = shared_conn.execute("""
-                    SELECT AVG(booking_rate), COUNT(*)
-                    FROM price_snapshots
-                    WHERE hotel_id = ?
-                      AND booking_rate > 200
-                      AND CAST(strftime('%m', checkin_date) AS INTEGER) = ?
-                      AND snapshot_time >= datetime('now', '-7 days')
-                """, (hotel_id, month)).fetchone()
-                if row_ota and row_ota[1] and row_ota[1] >= 1:
-                    real_ota_avg = float(row_ota[0])
+            # ── 层2备用：Booking.com OTA竞对价（最近7天）
+            row_ota = shared_conn.execute("""
+                SELECT AVG(booking_rate), COUNT(*)
+                FROM price_snapshots
+                WHERE hotel_id = ?
+                  AND booking_rate > 200
+                  AND CAST(strftime('%m', checkin_date) AS INTEGER) = ?
+                  AND snapshot_time >= datetime('now', '-7 days')
+            """, (hotel_id, month)).fetchone()
+            if row_ota and row_ota[1] and row_ota[1] >= 1:
+                real_ota_avg = float(row_ota[0])
 
         except Exception:
             pass
