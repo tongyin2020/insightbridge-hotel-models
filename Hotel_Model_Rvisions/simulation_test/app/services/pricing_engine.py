@@ -34,8 +34,9 @@ DEFAULT_WEIGHTS = {
         "visitors_stats": 0.08,
         "flight_ferry": 0.05,
         "zhuhai_saturation": 0.12,
-        "ota_booking_pace": 0.12,
-        "weather": 0.05,
+        "ota_booking_pace": 0.07,   # ↓0.05 腾出DSEC权重（与top-level引擎对齐）
+        "weather": 0.03,            # ↓0.02 腾出DSEC权重
+        "dsec_market_occ": 0.07,    # 补充(2026-06-01): 澳门统计局月度入住率信号
     },
 }
 

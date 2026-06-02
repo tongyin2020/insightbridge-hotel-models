@@ -413,71 +413,8 @@ def makcorps_market_snapshot() -> tuple[bool, dict[str, float], float, float]:
     fallback价格来自澳门DSEC统计局历史均价（已在build_external_snapshot中处理）。
     """
     # MakCorps订阅到期，不再调用API — fallback由 build_external_snapshot 处理
+    # 清理(2026-06-01): 删除了63行死代码（MakCorps API调用逻辑），防止变量遮蔽和维护混乱
     return False, {}, 0.0, 0.0
-
-    # ── 以下代码保留备用，如恢复订阅可删除上方 return ──────────────────
-    key = os.getenv("MAKCORPS_API_KEY", "").strip()
-    if not key:
-        return False, {}, 0.0, 0.0
-
-    # 动态日期：明天 check-in，后天 check-out（每次运行都是最新价格）
-    tomorrow  = (datetime.now(UTC) + timedelta(days=1)).strftime("%Y-%m-%d")
-    day_after = (datetime.now(UTC) + timedelta(days=2)).strftime("%Y-%m-%d")
-    checkin   = os.getenv("CHECKIN_DATE",  tomorrow)
-    checkout  = os.getenv("CHECKOUT_DATE", day_after)
-    currency  = "USD"   # 固定USD — MakCorps HKD/MOP格式("HK$773")无法解析；USD由后续代码转换为MOP
-
-    # 澳门代表性酒店 — 覆盖3~5星，跨区域
-    SAMPLE_HOTELS = ["8331360", "664580", "306251", "7810592", "7807481", "2091060"]
-
-    try:
-        all_prices: list[float] = []
-        ota_prices: dict[str, float] = {}
-
-        for hotel_id in SAMPLE_HOTELS:
-            try:
-                hotel_resp = requests.get(
-                    "https://api.makcorps.com/hotel",
-                    params={"api_key": key, "hotelid": hotel_id, "cur": currency,
-                            "rooms": 1, "adults": 2, "checkin": checkin, "checkout": checkout},
-                    timeout=15,
-                )
-                if hotel_resp.status_code != 200:
-                    continue
-                payload = hotel_resp.json()
-                flat = [item for block in payload.get("comparison", [])
-                        if isinstance(block, list) for item in block
-                        if isinstance(item, dict)]
-                for item in flat:
-                    for idx in range(1, 20):   # vendor1~19（含 Agoda=8, Trip.com=9）
-                        vendor = item.get(f"vendor{idx}", "")
-                        price  = item.get(f"price{idx}", "")
-                        if not vendor or price is None:
-                            continue
-                        try:
-                            # 兼容 "$91" / "HK$773" / "MOP 734" 等多种货币格式
-                            import re as _re
-                            clean = _re.sub(r'[^\d.]', '', str(price))
-                            numeric = float(clean)
-                            if numeric > 0:
-                                key_name = str(vendor).lower().replace(".", "_")
-                                ota_prices[key_name] = round(
-                                    (ota_prices.get(key_name, numeric) + numeric) / 2, 2
-                                )
-                                all_prices.append(numeric)
-                        except ValueError:
-                            continue
-            except Exception:
-                continue
-
-        if not all_prices:
-            return False, {}, 0.0, 0.0
-
-        competitor_price = min(all_prices)
-        upper_tier_adr   = max(all_prices)
-        return True, ota_prices, round(competitor_price, 2), round(upper_tier_adr, 2)
-    except Exception:
-        return False, {}, 0.0, 0.0
 
 
 def build_external_snapshot(ts: datetime) -> ExternalSnapshot:

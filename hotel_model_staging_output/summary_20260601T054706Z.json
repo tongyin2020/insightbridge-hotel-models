@@ -1,0 +1,10 @@
+{
+  "cycles_completed": 1,
+  "mare_runs": 836,
+  "director_runs": 836,
+  "selfacq_runs": 1064,
+  "mare_failures": 0,
+  "director_failures": 0,
+  "selfacq_failures": 0,
+  "issue_counts": {}
+}
