@@ -471,6 +471,18 @@ def build_external_snapshot(ts: datetime) -> ExternalSnapshot:
         except Exception:
             pass
 
+    # ── 修正(2026-06-01)：用DSEC星级专属ADR覆盖OTA混合fallback ─────────────
+    # MakCorps停用后 competitor_price=1120（所有星级混合均值）→ 3★市场基准虚高
+    # DSEC数据已按星级加载，用其覆盖，保留5%市场溢价（模拟市场而非历史均值）
+    if not market_ok and dsec_cold_adr.get(3, 0) > 0:
+        competitor_price = round(dsec_cold_adr[3] * 1.05, 0)   # 3★专属：DSEC ADR + 5%溢价
+        upper_tier_adr   = round(dsec_cold_adr.get(5, 0) * 1.05 or 1304.0, 0)  # 5★专属
+        ota_prices = {
+            "booking_com": competitor_price,
+            "trip_com":    round(competitor_price * 1.04, 0),
+            "agoda":       round(competitor_price * 1.02, 0),
+        }
+
     return ExternalSnapshot(
         timestamp_utc=ts.isoformat(),
         event_density=event_density,
@@ -525,11 +537,15 @@ def _tier_guardrails(base_price: float, star: int) -> tuple[float, float]:
 
 
 def build_payload(snapshot: ExternalSnapshot, scenario: ScenarioDefinition, hotel_id: str, base_price: float, market_segment: str | None, star: int = 3) -> dict[str, Any]:
-    competitor_price = snapshot.competitor_price
+    # 修正(2026-06-01)：优先用DSEC星级专属ADR作为竞对基准价
+    # snapshot.competitor_price 在MakCorps停用后=3★DSEC×1.05（已修正）
+    # 但4★/5★仍需从dsec_cold_adr取各自的专属值，避免用3★价作为高端酒店基准
+    _dsec_adr = (snapshot.dsec_cold_adr or {}).get(star, 0)
+    competitor_price = round(_dsec_adr * 1.05, 0) if _dsec_adr > 0 else snapshot.competitor_price
     if scenario.name == "competitor_pressure":
-        competitor_price *= 0.90
+        competitor_price = round(competitor_price * 0.90, 0)
     elif scenario.name == "near_sellout":
-        competitor_price *= 1.08
+        competitor_price = round(competitor_price * 1.08, 0)
     elif scenario.name == "dirty_data":
         competitor_price = -50.0
 
@@ -763,7 +779,12 @@ def main() -> int:
         for hotel in ALL_HOTELS_GPT:
             # 动态计算 base_price：历史BAR(60%) + OTA推算(40%) + 声誉修正
             # 有真实数据时自动切换，冷启动时用OTA估算；声誉冷启动时 rep_adj=0
-            ota_ref = snapshot.competitor_price if hotel["star"] <= 3 else snapshot.upper_tier_adr
+            # 修正(2026-06-01)：优先使用DSEC星级专属ADR×1.05作为compute_dynamic_base_price的OTA参考
+            # 避免3★酒店使用混合OTA均价1120（含4-5★权重）→ 推高base_price → 推高弹性搜索上限
+            _dsec_ref = (snapshot.dsec_cold_adr or {}).get(hotel["star"], 0)
+            ota_ref = round(_dsec_ref * 1.05, 0) if _dsec_ref > 0 else (
+                snapshot.competitor_price if hotel["star"] <= 3 else snapshot.upper_tier_adr
+            )
             _tier = {3: "3_star", 4: "4_star", 5: "5_star"}.get(hotel["star"], "3_star")
             base = compute_dynamic_base_price(
                 hotel_id=hotel["hotel_id"],
@@ -829,7 +850,12 @@ def main() -> int:
 
         # ── Director：对全部76家酒店 × 所有场景 ─────────────────────────
         for hotel in ALL_HOTELS_GPT:
-            ota_ref = snapshot.competitor_price if hotel["star"] <= 3 else snapshot.upper_tier_adr
+            # 修正(2026-06-01)：优先使用DSEC星级专属ADR×1.05作为compute_dynamic_base_price的OTA参考
+            # 避免3★酒店使用混合OTA均价1120（含4-5★权重）→ 推高base_price → 推高弹性搜索上限
+            _dsec_ref = (snapshot.dsec_cold_adr or {}).get(hotel["star"], 0)
+            ota_ref = round(_dsec_ref * 1.05, 0) if _dsec_ref > 0 else (
+                snapshot.competitor_price if hotel["star"] <= 3 else snapshot.upper_tier_adr
+            )
             _tier = {3: "3_star", 4: "4_star", 5: "5_star"}.get(hotel["star"], "3_star")
             base = compute_dynamic_base_price(
                 hotel_id=hotel["hotel_id"],
@@ -881,7 +907,12 @@ def main() -> int:
                 "booking_prices_3": [],
             }
             for hotel in ALL_HOTELS_GPT:
-                ota_ref = snapshot.competitor_price if hotel["star"] <= 3 else snapshot.upper_tier_adr
+                # 修正(2026-06-01)：优先使用DSEC星级专属ADR×1.05作为compute_dynamic_base_price的OTA参考
+            # 避免3★酒店使用混合OTA均价1120（含4-5★权重）→ 推高base_price → 推高弹性搜索上限
+            _dsec_ref = (snapshot.dsec_cold_adr or {}).get(hotel["star"], 0)
+            ota_ref = round(_dsec_ref * 1.05, 0) if _dsec_ref > 0 else (
+                snapshot.competitor_price if hotel["star"] <= 3 else snapshot.upper_tier_adr
+            )
                 _tier = {3: "3_star", 4: "4_star", 5: "5_star"}.get(hotel["star"], "3_star")
                 base = compute_dynamic_base_price(
                     hotel_id=hotel["hotel_id"],
