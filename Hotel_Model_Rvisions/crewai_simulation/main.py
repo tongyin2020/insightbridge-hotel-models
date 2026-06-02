@@ -458,7 +458,10 @@ def main():
                                  "psrs_status": r.get("psrs_status"),
                                  "integration_score": r.get("integration_score"),
                                  "channel": r.get("channel")}),
-                     cp, r.get("psrs_status"), r.get("loyalty_tier"),
+                     # 修正(2026-06-01): confidence列错误写入loyalty_tier，改为integration_score分级
+                     cp, r.get("psrs_status"),
+                     ("High"   if r.get("integration_score", 0) >= 0.60 else
+                      "Medium" if r.get("integration_score", 0) >= 0.35 else "Low"),
                      str(r.get("upsell_revenue", 0)), "; ".join(anom),
                      weather_c, int(signal["is_holiday"]), int(signal["is_weekend"]))
                 )
@@ -487,8 +490,13 @@ def main():
                      json.dumps({"direct_offer_price": dp,
                                  "ota_standard_price": r.get("ota_standard_price"),
                                  "direct_wins_vs_ota": r.get("direct_wins_vs_ota")}),
+                     # 修正(2026-06-01): confidence列错误写入loyalty_tier，改为直销胜出置信度
                      dp, "HIGH" if r.get("demand_high") else "NORMAL",
-                     r.get("loyalty_tier"), "N/A", "; ".join(anom),
+                     ("High"   if r.get("direct_wins_vs_ota") and
+                                  r.get("direct_net_revenue", 0) > r.get("ota_net_revenue", 0) * 1.05
+                      else "Medium" if r.get("direct_wins_vs_ota")
+                      else "Low"),
+                     f"+{r.get('revpar_lift_vs_market', '0%')}", "; ".join(anom),
                      weather_c, int(signal["is_holiday"]), int(signal["is_weekend"]))
                 )
                 hour_results.append(("ACQ", dp, anom))
