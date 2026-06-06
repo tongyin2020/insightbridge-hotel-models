@@ -42,6 +42,11 @@ try:
     if str(_V6_ENGINE_DIR) not in _sys_v6.path:
         _sys_v6.path.insert(0, str(_V6_ENGINE_DIR))
     from hros_v6.integration_adapter import apply_v6_to_mare_output
+    from hros_v6.result_adapters import (
+        adapt_director_to_v6_result,
+        adapt_selfacq_to_v6_result,
+        attach_revenue_attribution,
+    )
     from hros_v6.revenue_decision_layer_v6 import RevenueDecisionLayerV6 as _V6Layer
     from hros_v6.crm_guardrails import CRMGuardrails as _CRMGuard
     from hros_v6.selfacq_engine_v6 import SelfACQEngineV6 as _SelfACQV6
@@ -997,6 +1002,14 @@ def run_3star_test(hotel: dict, signal: dict, real_data: dict,
                 data_quality     = _v6_dq,
             )
             result["hotel_profile_version"] = "V6"
+            result = attach_revenue_attribution(
+                result,
+                baseline_adr=max(_v6_mkt, _v6_floor),
+                baseline_occ=_v6_occ,
+                mare_adr=float(result.get("recommended_price", 0.0) or 0.0),
+                mare_occ=float(result.get("predicted_occupancy", _v6_occ) or _v6_occ),
+                rooms_available=1.0,
+            )
         except Exception as _v6e:
             result["hotel_profile_version"] = "V5_fallback"
 
@@ -1132,6 +1145,16 @@ def run_45star_test(hotel: dict, signal: dict, real_data: dict,
             result["selfacq_v6_advantage"]     = _v6_acq_out["direct_advantage"]
             result["selfacq_v6_wins"]          = _v6_acq_out["direct_wins"]
             result["hotel_profile_version"]    = "V6"
+            result = adapt_selfacq_to_v6_result(result)
+            result = attach_revenue_attribution(
+                result,
+                baseline_adr=ota_standard_price,
+                baseline_occ=occupancy,
+                mare_adr=ota_standard_price,
+                mare_occ=occupancy,
+                selfacq_incremental_value=max(0.0, direct_net_revenue - ota_net_revenue),
+                rooms_available=1.0,
+            )
         except Exception:
             result["hotel_profile_version"]    = "V5_fallback"
 
@@ -1166,6 +1189,12 @@ def run_director_crm_test(hotel: dict, signal: dict, real_data: dict,
         crm_match_prob = min(0.92, base_rate * (1.12 if signal["is_holiday"] else 1.0))
     crm_matched = random.random() < crm_match_prob
 
+    loyalty_alias = {
+        "vip": "platinum",
+        "diamond": "platinum",
+    }
+    loyalty_key = loyalty_alias.get(loyalty_tier, loyalty_tier)
+
     # ── 增值销售（满房/无库存场景则无法升房）────────────────────────
     upsell_menu = {
         "room_upgrade":      {"prob": 0.22, "revenue": 150},
@@ -1178,7 +1207,7 @@ def run_director_crm_test(hotel: dict, signal: dict, real_data: dict,
         upsell_type = random.choice(list(upsell_menu.keys()))
         accept_p = upsell_menu[upsell_type]["prob"]
         loyalty_bonus = {"platinum": 1.45, "gold": 1.35, "silver": 1.18,
-                         "bronze": 1.08, "none": 1.0}[loyalty_tier]
+                         "bronze": 1.08, "none": 1.0}[loyalty_key]
         upsell_accepted = random.random() < min(0.75, accept_p * loyalty_bonus)
         upsell_revenue = upsell_menu[upsell_type]["revenue"] if upsell_accepted else 0
 
@@ -1203,12 +1232,12 @@ def run_director_crm_test(hotel: dict, signal: dict, real_data: dict,
 
     # ── CRM忠诚度调价 ─────────────────────────────────────────────────
     discount_map = {"platinum": 0.10, "gold": 0.08, "silver": 0.04, "bronze": 0.02, "none": 0.0}
-    crm_adjusted_price = round(hotel["base_price"] * (1.0 - discount_map[loyalty_tier]))
+    crm_adjusted_price = round(hotel["base_price"] * (1.0 - discount_map[loyalty_key]))
 
     # ── V6 CRM 护栏：防止折扣过深摧毁 ADR ───────────────────────────────────
     if _V6_OK:
         try:
-            _crm_proposed = discount_map[loyalty_tier]
+            _crm_proposed = discount_map[loyalty_key]
             _crm_incr = max(0.0, clv_estimate - hotel["base_price"] * 0.5)
             _crm_guard = _CRMGuard().cap_discount(
                 star_rating       = hotel.get("star", 3),
@@ -1218,9 +1247,9 @@ def run_director_crm_test(hotel: dict, signal: dict, real_data: dict,
             crm_adjusted_price = round(hotel["base_price"] * (1.0 - _crm_guard["discount"]))
             result_crm_guardrail = _crm_guard
         except Exception:
-            result_crm_guardrail = {"discount": discount_map[loyalty_tier], "reason": "V6_error"}
+            result_crm_guardrail = {"discount": discount_map[loyalty_key], "reason": "V6_error"}
     else:
-        result_crm_guardrail = {"discount": discount_map[loyalty_tier], "reason": "V5_only"}
+        result_crm_guardrail = {"discount": discount_map[loyalty_key], "reason": "V5_only"}
 
     # ── 集成健康评分（0-1）────────────────────────────────────────────
     integration_score = round(
@@ -1269,6 +1298,23 @@ def run_director_crm_test(hotel: dict, signal: dict, real_data: dict,
         result["elasticity_lift_pct"]     = er.true_lift_pct
         result["elasticity_used"]         = er.elasticity_used
         # CRM价格本身不覆盖（CRM有其忠诚度折扣逻辑），仅记录RevPAR验证结果
+
+    if _V6_OK:
+        result = adapt_director_to_v6_result(result)
+        result = attach_revenue_attribution(
+            result,
+            baseline_adr=hotel["base_price"],
+            baseline_occ=occupancy,
+            mare_adr=hotel["base_price"],
+            mare_occ=occupancy,
+            crm_incremental_value=max(
+                0.0,
+                float(upsell_revenue or 0.0)
+                + float(ota_commission_saved or 0.0)
+                + max(0.0, float(crm_adjusted_price - hotel["base_price"])) * occupancy,
+            ),
+            rooms_available=1.0,
+        )
 
     return result
 
@@ -1484,16 +1530,15 @@ def main():
                 result = run_3star_test(hotel, signal, rd, scenario)
                 anomalies = detect_anomalies(hotel, result, signal, "MARE_ALL")
                 rec_price = result.get("recommended_price", 0)
-                _insert("MARE_ALL", hotel,
-                        {"recommended_price": rec_price,
-                         "scenario": scenario.name,
-                         "scenario_category": scenario.category,
-                         "occupancy": scenario.occupancy,
-                         "days_to_arrival": scenario.days_to_arrival,
-                         "competitor_mult": scenario.competitor_price_multiplier,
-                         "demand_state": result.get("demand_state"),
-                         "confidence": result.get("confidence"),
-                         "guardrail_violations": result.get("guardrail_violations", [])},
+                mare_output = dict(result)
+                mare_output.update({
+                    "scenario": scenario.name,
+                    "scenario_category": scenario.category,
+                    "occupancy": scenario.occupancy,
+                    "days_to_arrival": scenario.days_to_arrival,
+                    "competitor_mult": scenario.competitor_price_multiplier,
+                })
+                _insert("MARE_ALL", hotel, mare_output,
                         rec_price, result.get("demand_state"),
                         result.get("confidence"), result.get("expected_revenue_lift"),
                         anomalies)
@@ -1513,20 +1558,12 @@ def main():
                 result = run_director_crm_test(hotel, signal, real_data, scenario)
                 anomalies = detect_anomalies(hotel, result, signal, "DIRECTOR_CRM_ALL")
                 crm_price = result.get("crm_adjusted_price", 0)
-                _insert("DIRECTOR_CRM_ALL", hotel,
-                        {"scenario": scenario.name,
-                         "scenario_category": scenario.category,
-                         "psrs_health_input": scenario.psrs_health,
-                         "channel": result.get("channel"),
-                         "crm_matched": result.get("crm_matched"),
-                         "loyalty_tier": result.get("loyalty_tier"),
-                         "psrs_status": result.get("psrs_status"),
-                         "upsell_accepted": result.get("upsell_accepted"),
-                         "upsell_revenue": result.get("upsell_revenue"),
-                         "whatsapp_delivered": result.get("whatsapp_delivered"),
-                         "ota_commission_saved": result.get("ota_commission_saved"),
-                         "integration_score": result.get("integration_score"),
-                         "crm_adjusted_price": crm_price},
+                crm_output = dict(result)
+                crm_output.update({
+                    "scenario_category": scenario.category,
+                    "psrs_health_input": scenario.psrs_health,
+                })
+                _insert("DIRECTOR_CRM_ALL", hotel, crm_output,
                         crm_price, signal.get("demand_state", "NORMAL"),
                         ("High" if result.get("integration_score", 0) >= 0.7
                          else "Medium" if result.get("integration_score", 0) >= 0.4
@@ -1549,18 +1586,13 @@ def main():
                 result = run_45star_test(hotel, signal, real_data, scenario)
                 anomalies = detect_anomalies(hotel, result, signal, "SELFACQ_ALL")
                 direct_price = result.get("direct_offer_price", 0)
-                _insert("SELFACQ_ALL", hotel,
-                        {"scenario": scenario.name,
-                         "scenario_category": scenario.category,
-                         "competitor_mult": scenario.competitor_price_multiplier,
-                         "direct_offer_price": direct_price,
-                         "ota_standard_price": result.get("ota_standard_price"),
-                         "direct_wins_vs_ota": result.get("direct_wins_vs_ota"),
-                         "direct_net_revenue": result.get("direct_net_revenue"),
-                         "guest_segment": result.get("guest_segment"),
-                         "objective_mode": result.get("objective_mode"),
-                         "loyalty_tier": result.get("loyalty_tier"),
-                         "occupancy": result.get("occupancy")},
+                selfacq_output = dict(result)
+                selfacq_output.update({
+                    "scenario": scenario.name,
+                    "scenario_category": scenario.category,
+                    "competitor_mult": scenario.competitor_price_multiplier,
+                })
+                _insert("SELFACQ_ALL", hotel, selfacq_output,
                         direct_price,
                         "HIGH" if result.get("demand_high") else "NORMAL",
                         ("High" if (result.get("direct_wins_vs_ota") and

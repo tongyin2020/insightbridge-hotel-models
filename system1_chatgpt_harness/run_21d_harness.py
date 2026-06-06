@@ -74,6 +74,29 @@ except ImportError:
             true_lift_pct=0.0, elasticity_used=0.0, data_source="unavailable", search_steps=0
         )
 
+# ── HROS V6 共享适配层 ──────────────────────────────────────────────────────
+_V6_ENGINE_DIR = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/共用_HROS_V6引擎")
+if str(_V6_ENGINE_DIR) not in _sys.path:
+    _sys.path.insert(0, str(_V6_ENGINE_DIR))
+try:
+    from hros_v6.integration_adapter import apply_v6_to_mare_output as _v6_mare
+    from hros_v6.result_adapters import (
+        adapt_director_to_v6_result as _adapt_director_v6,
+        adapt_selfacq_to_v6_result as _adapt_selfacq_v6,
+        attach_revenue_attribution as _attach_revenue_attribution,
+    )
+    _V6_OK = True
+except Exception:
+    _V6_OK = False
+    def _v6_mare(result, **kwargs):
+        return result
+    def _adapt_director_v6(result, **kwargs):
+        return result
+    def _adapt_selfacq_v6(result, **kwargs):
+        return result
+    def _attach_revenue_attribution(result, **kwargs):
+        return result
+
 # ── 自主获客模型（从 simulation_test 复用）─────────────────────────────────
 _SIM_DIR = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/system2_claude_simulation")
 if str(_SIM_DIR) not in _sys.path:
@@ -935,6 +958,31 @@ def main() -> int:
                     result["expected_revenue_lift"] = f"+{er.true_lift_pct:.1f}%"
                     result["elasticity_used"]     = er.elasticity_used
                     result["elasticity_source"]   = er.data_source
+                if _V6_OK and ok and result.get("recommended_price", 0) > 0:
+                    try:
+                        _v6_floor, _v6_ceil = _tier_guardrails(base, hotel["star"])
+                        result = _v6_mare(
+                            result,
+                            star_rating=hotel["star"],
+                            market_price=max(float(snapshot.competitor_price or base), _v6_floor),
+                            base_occ=sc.current_occupancy,
+                            floor_price=_v6_floor,
+                            ceiling_price=max(float(result.get("recommended_price", _v6_ceil)) * 2.0, _v6_ceil),
+                            demand_state=result.get("demand_state", "NORMAL"),
+                            competitor_price=float(payload.get("competitor_price") or snapshot.competitor_price or base),
+                            data_quality=1.0 if snapshot.raw_market_source_ok else 0.6,
+                        )
+                        result["hotel_profile_version"] = "V6"
+                        result = _attach_revenue_attribution(
+                            result,
+                            baseline_adr=max(float(snapshot.competitor_price or base), _v6_floor),
+                            baseline_occ=sc.current_occupancy,
+                            mare_adr=float(result.get("recommended_price", 0.0) or 0.0),
+                            mare_occ=float(result.get("predicted_occupancy", sc.current_occupancy) or sc.current_occupancy),
+                            rooms_available=1.0,
+                        )
+                    except Exception:
+                        result["hotel_profile_version"] = "V5_fallback"
 
                 write_jsonl(log_path, {
                     "timestamp_utc": ts.isoformat(),
@@ -969,6 +1017,8 @@ def main() -> int:
                     payload["competitor_price"] = round(snapshot.upper_tier_adr * ratio, 2)
                 payload["total_rooms"] = hotel["total_rooms"]
                 ok, result = run_director(director_repo, payload, scenario.objective_mode)
+                if ok and _V6_OK:
+                    result = _adapt_director_v6(result)
                 global_counts["director_runs"] += 1
                 issues = [] if not ok else evaluate_result("director", result)
                 if not ok or issues:
@@ -1018,6 +1068,8 @@ def main() -> int:
                     try:
                         result = _run_selfacq(hotel_with_base, _signal, _real_data, sc)
                         ok = True
+                        if _V6_OK:
+                            result = _adapt_selfacq_v6(result)
                         issues = []
                         if result.get("direct_offer_price", 0) <= 0:
                             issues.append("non_positive_price")

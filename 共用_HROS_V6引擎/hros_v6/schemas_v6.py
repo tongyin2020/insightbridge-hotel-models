@@ -35,3 +35,27 @@ class RevenueDecisionV6:
     confidence: float
     objective_value: float
     reason: Dict[str, float] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class DirectorResultV6:
+    recommended_price: float
+    predicted_occupancy: float
+    predicted_revpar: float
+    expected_revenue_lift: str
+    price_risk_score: float
+    opportunity_score: float
+    rate_confidence: float
+    hotel_profile_version: str = "V6"
+
+
+@dataclass(frozen=True)
+class SelfACQResultV6:
+    recommended_price: float
+    predicted_occupancy: float
+    predicted_revpar: float
+    expected_revenue_lift: str
+    price_risk_score: float
+    opportunity_score: float
+    rate_confidence: float
+    hotel_profile_version: str = "V6"

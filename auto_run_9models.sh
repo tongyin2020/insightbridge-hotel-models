@@ -22,6 +22,22 @@ log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG"
 }
 
+load_env_file() {
+    local env_file="$1"
+    [ -f "$env_file" ] || return 0
+    eval "$("$PYTHON" - "$env_file" <<'PY'
+from dotenv import dotenv_values
+import shlex
+import sys
+
+for key, value in dotenv_values(sys.argv[1]).items():
+    if value is None:
+        continue
+    print(f"export {key}={shlex.quote(value)}")
+PY
+)"
+}
+
 # 检查 PID 是否存活
 is_running_by_pid() {
     local pid_file="$1"
@@ -77,12 +93,9 @@ start_system() {
 
     cd "$cwd" || { log "  ❌ cd 失败: $cwd"; return 1; }
 
-    # 加载 .env（S1 需要 API KEY）
-    if [ -f "$cwd/.env" ]; then
-        set -a
-        source "$cwd/.env"
-        set +a
-    fi
+    # 用 dotenv 解析器加载 .env，避免带空格的值被 shell 误当命令执行。
+    load_env_file "$BASE/.env"
+    load_env_file "$cwd/.env"
 
     nohup "$PYTHON" -u "$script" $extra_args >> "$log_file" 2>&1 &
     local pid=$!
