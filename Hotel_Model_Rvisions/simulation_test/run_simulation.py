@@ -47,8 +47,10 @@ try:
     from hros_v6.crm_guardrails import CRMGuardrails as _CRMGuard
     from hros_v6.selfacq_engine_v6 import SelfACQEngineV6 as _SelfACQV6
     from hros_v6.revenue_attribution_engine import RevenueAttributionEngine as _AttrEngine
+    from hotel_learning_loop_pipeline import calibrate_all_hotels as _calibrate_hotels
+    from hotel_learning_loop_pipeline import get_baseline_adr as _get_baseline_adr
     _V6_OK = True
-    print("✓ HROS V6 引擎已加载")
+    print("✓ HROS V6 引擎已加载（含 HotelLearningLoop 周度校准）")
 except Exception as _v6_err:
     print(f"⚠ HROS V6 未加载（继续V5）: {_v6_err}")
 
@@ -1599,6 +1601,22 @@ def main():
                 pass
 
         conn.commit()
+
+        # ── HotelLearningLoop 周度校准（每168小时 = 1模拟周）──────────────
+        if _V6_OK and (hour + 1) % 168 == 0:
+            _week_idx = (hour + 1) // 168 - 1
+            _all_hids = [h["hotel_id"] for h in ALL_HOTELS]
+            try:
+                _cal_res = _calibrate_hotels(_all_hids, str(DB_PATH), _week_idx)
+                _updated = sum(1 for v in _cal_res.values()
+                               if v.get("last_calibration_week") == f"sim_week_{_week_idx+1:02d}")
+                _sample_adr = next(
+                    (v.get("baseline_adr") for v in _cal_res.values() if v.get("baseline_adr")), 0
+                )
+                print(f"\n  [V6学习] 第{_week_idx+1}周校准 | 更新{_updated}/{len(_all_hids)}家 "
+                      f"| 样本ADR≈{_sample_adr:.0f} MOP | 状态写入 hotel_profiles_v6.json")
+            except Exception as _e:
+                print(f"  [V6学习] 周度校准失败（不影响主流程）: {_e}")
 
         # ── 控制台进度输出 ────────────────────────────────────────────────
         anomaly_count = sum(1 for _, _, _, a in hour_results if a)

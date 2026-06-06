@@ -88,15 +88,17 @@ def build_records_from_sqlite(
     hour_end: int,
 ) -> List[WeeklyHotelRecord]:
     """
-    从 SQLite results 表提取 WeeklyHotelRecord 列表。
+    从 SQLite hourly_runs 表提取 WeeklyHotelRecord 列表。
 
-    表结构（System 2 / System 3 共用）:
-        hotel_id TEXT, hour_index INTEGER, output_json TEXT/JSON
-    output_json 字段至少包含:
-        recommended_price / mare_price  (ADR代理值)
-        predicted_occupancy             (占用率，0-1)
-        room_type                       (可选)
-        channel                         (可选)
+    表结构（System 2 / System 3 实际）:
+        hotel_id TEXT, sim_hour INTEGER, rec_price REAL,
+        demand_state TEXT, output_json TEXT/JSON
+
+    output_json 字段：
+        recommended_price   (定价)
+        occupancy           (占用率 0~1，S2) / predicted_occupancy (S3 V6后)
+        scenario            (场景名，可选)
+        demand_state        (需求状态)
     """
     records: List[WeeklyHotelRecord] = []
     path = Path(db_path)
@@ -110,21 +112,28 @@ def build_records_from_sqlite(
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
 
-        # 兼容 System 2 (results) 和 System 3 (results) 表名一致
-        # P1 FIX (Gemini): verify hour_index column exists before querying
-        cols = {r[1] for r in cur.execute("PRAGMA table_info(results)").fetchall()}
-        if "hour_index" not in cols:
-            logger.warning("results 表无 hour_index 列，读取全部记录")
-            cur.execute("SELECT output_json FROM results WHERE hotel_id = ?", (hotel_id,))
-        else:
+        # 自动检测表名（S2/S3 实际为 hourly_runs，兼容旧版 results）
+        tables = {r[0] for r in cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        tbl = "hourly_runs" if "hourly_runs" in tables else "results"
+
+        # 自动检测小时列名（S2/S3 实际为 sim_hour，旧版为 hour_index）
+        cols = {r[1] for r in cur.execute(f"PRAGMA table_info({tbl})").fetchall()}
+        hour_col = "sim_hour" if "sim_hour" in cols else ("hour_index" if "hour_index" in cols else None)
+
+        # 自动检测占用率列（output_json内：S2=occupancy, S3 V6后=predicted_occupancy）
+        # 直接读 output_json 解析，顺序尝试
+
+        if hour_col:
             cur.execute(
-                """
-                SELECT output_json
-                FROM results
-                WHERE hotel_id = ?
-                  AND hour_index BETWEEN ? AND ?
-                """,
+                f"SELECT output_json, rec_price, demand_state FROM {tbl} "
+                f"WHERE hotel_id = ? AND {hour_col} BETWEEN ? AND ?",
                 (hotel_id, hour_start, hour_end),
+            )
+        else:
+            logger.warning("[%s] 无小时列，读取该酒店全部记录", hotel_id)
+            cur.execute(
+                f"SELECT output_json, rec_price, demand_state FROM {tbl} WHERE hotel_id = ?",
+                (hotel_id,),
             )
 
         for row in cur.fetchall():
@@ -132,36 +141,34 @@ def build_records_from_sqlite(
             if not d:
                 continue
 
-            price = d.get("recommended_price") or d.get("mare_price") or d.get("price")
+            # 价格：output_json 优先，fallback 到 rec_price 列
+            price = (d.get("recommended_price") or d.get("mare_price") or
+                     d.get("price") or row["rec_price"])
 
-            # P0 FIX (Gemini/DeepSeek): use explicit None-check instead of `or` chain
-            # to avoid silently dropping valid zero-occupancy records.
-            raw_occ = d.get("predicted_occupancy")
+            # 占用率：S2=occupancy, S3 V6后=predicted_occupancy（explicit None-check）
+            raw_occ = d.get("occupancy")
             if raw_occ is None:
-                raw_occ = d.get("occupancy")
+                raw_occ = d.get("predicted_occupancy")
             occ = float(raw_occ) if raw_occ is not None else 0.0
 
             if not price or float(price) <= 0:
                 continue
-            # occ == 0 means zero occupancy: skip (no rooms sold → not meaningful for ADR)
             if occ <= 0:
                 continue
 
-            # P0 FIX (DeepSeek/Gemini): rooms_sold must be actual room count, not a 0~1 ratio.
-            # We use occ as a fractional weight; rooms_available defaults to 1 because the DB
-            # stores per-room-type results. Downstream ADR = Σrevenue / Σrooms_sold stays
-            # semantically correct as long as all records share the same normalisation.
-            # When rooms_available is known, pass it in via output_json["rooms_available"].
+            # 场景/渠道/房型映射
+            channel   = d.get("channel", "Direct")
+            room_type = d.get("room_type") or d.get("scenario", "Standard")
             rooms_available = float(d.get("rooms_available") or 1.0)
-            rooms_sold_actual = occ * rooms_available   # actual rooms sold this hour
+            rooms_sold_actual = occ * rooms_available
 
             records.append(
                 WeeklyHotelRecord(
                     hotel_id   = hotel_id,
                     date       = week_label,
-                    room_type  = d.get("room_type", "Standard"),
-                    channel    = d.get("channel", "Direct"),
-                    rooms_sold = rooms_sold_actual,        # actual (fractional) rooms
+                    room_type  = room_type,
+                    channel    = channel,
+                    rooms_sold = rooms_sold_actual,
                     adr        = float(price),
                     revenue    = float(price) * rooms_sold_actual,
                     occupancy  = float(occ),

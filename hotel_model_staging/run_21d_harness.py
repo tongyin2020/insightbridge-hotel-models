@@ -42,6 +42,8 @@ try:
     from hros_v6.crm_guardrails import CRMGuardrails as _CRMGuard
     from hros_v6.selfacq_engine_v6 import SelfACQEngineV6 as _SelfACQV6
     from hros_v6.revenue_attribution_engine import RevenueAttributionEngine as _AttrEngine
+    from hotel_learning_loop_pipeline import calibrate_all_hotels as _calibrate_hotels
+    from hotel_learning_loop_pipeline import get_baseline_adr as _get_baseline_adr
     _V6_OK = True
 except Exception as _v6_err:
     pass  # 降级到V5，不中断运行
@@ -1126,6 +1128,22 @@ def main() -> int:
 
         global_counts["cycles_completed"] += 1
         summary_path.write_text(json.dumps(global_counts, indent=2, ensure_ascii=False), encoding="utf-8")
+
+        # ── HotelLearningLoop 周度校准（每168周期 = 1模拟周）───────────────
+        # S1 使用 cycle 计数器而非 sim_hour；每 168 cycles 视为一周
+        if _V6_OK and (global_counts["cycles_completed"]) % 168 == 0:
+            _s1_week_idx = global_counts["cycles_completed"] // 168 - 1
+            _s1_hids = [h["hotel_id"] for h in ALL_HOTELS_GPT]
+            # S1 无 per-hotel SQLite DB；用 CSV fallback（log JSONL）
+            _s1_log_csv = str(log_path).replace(".jsonl", ".csv") if log_path else None
+            try:
+                _s1_cal = _calibrate_hotels(_s1_hids, "/dev/null", _s1_week_idx,
+                                             csv_fallback=_s1_log_csv)
+                _s1_ok = sum(1 for v in _s1_cal.values()
+                             if v.get("last_calibration_week") == f"sim_week_{_s1_week_idx+1:02d}")
+                print(f"  [V6学习-S1] 第{_s1_week_idx+1}周校准 | 更新{_s1_ok}/{len(_s1_hids)}家")
+            except Exception as _e:
+                print(f"  [V6学习-S1] 周度校准失败（不影响主流程）: {_e}")
 
         if args.dry_run:
             break
