@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.insightbridge.auto_run_9models</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/auto_run_9models.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/tongyin/Desktop/InsightBridge_九大模型_v2026</string>
+
+  <!-- 每天 06:00 和 18:00 各触发一次 -->
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict>
+      <key>Hour</key><integer>6</integer>
+      <key>Minute</key><integer>0</integer>
+    </dict>
+    <dict>
+      <key>Hour</key><integer>18</integer>
+      <key>Minute</key><integer>0</integer>
+    </dict>
+  </array>
+
+  <key>StandardOutPath</key>
+  <string>/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/auto_run_9models.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/auto_run_9models.log</string>
+
+  <!-- 不在加载时立即执行，只按计划时间触发 -->
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/tongyin</string>
+    <key>PATH</key>
+    <string>/opt/anaconda3/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+</dict>
+</plist>
