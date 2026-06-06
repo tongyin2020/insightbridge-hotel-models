@@ -324,9 +324,10 @@ def read_playwright_baseline(hour: int) -> dict:
     if not baseline_db.exists():
         return {}
     try:
-        conn = sqlite3.connect(baseline_db)
+        conn = sqlite3.connect(str(baseline_db), timeout=10)
+        conn.execute("PRAGMA journal_mode=WAL")
         rows = conn.execute(
-            "SELECT AVG(rec_price) FROM hourly_runs WHERE model_type='MARE_ALL' AND sim_hour=?",
+            "SELECT AVG(rec_price) FROM hourly_runs WHERE model_type LIKE 'MARE_ALL%' AND sim_hour=?",
             (hour,)
         ).fetchone()
         conn.close()
@@ -362,6 +363,12 @@ def main():
             print(f"  [RESUME] 检测到已有数据，从第{resume_hour}小时继续（已完成{resume_hour}h/{TOTAL_HOURS}h）")
     except Exception:
         pass
+
+    # P1 FIX: 模拟完成后重启不产生空循环 CPU空转
+    if resume_hour >= TOTAL_HOURS:
+        print(f"[DONE] 模拟已全部完成（{TOTAL_HOURS}小时），正常退出。")
+        conn.close()
+        sys.exit(0)
 
     for hour in range(resume_hour, TOTAL_HOURS):
         run_start = datetime.now()

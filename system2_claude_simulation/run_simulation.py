@@ -215,7 +215,7 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
         base = ota_estimate * 0.97
 
     # Step B：星级范围截断
-    clamp_ranges = {3: (400, 1400), 4: (800, 3000), 5: (1500, 8000)}
+    clamp_ranges = {2: (200, 900), 3: (400, 1400), 4: (800, 3000), 5: (1500, 8000)}
     lo, hi = clamp_ranges.get(star, (200, 8000))
     base = max(lo, min(hi, base))
 
@@ -271,21 +271,18 @@ def _wecom_push_async(content: str):
     策略：每日汇总 + CRITICAL 告警推送；每小时快报已禁用防刷屏。
     重新启用：2026-06-05（修复：之前误禁导致日报停发）
     """
-    import threading, subprocess, tempfile, os
+    import threading, subprocess
     def _push():
         try:
             wecom_script = str(Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/Hotel_Model_Rvisions/wecom_push.py"))
             if not Path(wecom_script).exists():
                 return
-            with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
-                f.write(content)
-                tmp = f.name
+            # P1 FIX: 使用 stdin 传递 content，避免命令行长度超过 ARG_MAX（macOS ~256KB）
             subprocess.run(
-                ["python3", wecom_script, content],
+                ["python3", wecom_script],
+                input=content.encode("utf-8"),
                 capture_output=True, timeout=30
             )
-            try: os.unlink(tmp)
-            except: pass
         except Exception:
             pass
     threading.Thread(target=_push, daemon=True).start()
@@ -1402,6 +1399,12 @@ def main():
             print(f"  [RESUME] 检测到已有数据，从第{resume_hour}小时继续（已完成{resume_hour}h/{TOTAL_HOURS}h）")
     except Exception:
         pass
+
+    # P1 FIX: 模拟完成后重启不产生空循环 CPU空转
+    if resume_hour >= TOTAL_HOURS:
+        print(f"[DONE] 模拟已全部完成（{TOTAL_HOURS}小时），正常退出。")
+        conn.close()
+        sys.exit(0)
 
     for hour in range(resume_hour, TOTAL_HOURS):
         run_start = datetime.now()

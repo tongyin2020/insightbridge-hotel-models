@@ -16,6 +16,7 @@ HotelLearningLoop 周度校准流水线
 
 import json
 import os          # P0 FIX: use os.replace() for cross-platform atomic file swap
+import fcntl       # P0 FIX: 文件锁，防止 S2/S3 并发校准时画像JSON被覆盖
 import sqlite3
 import csv
 import logging
@@ -248,37 +249,46 @@ def run_weekly_calibration(
         其中 α = learning_rate = 0.25
     """
     loop = HotelLearningLoop()
-    profiles = load_profiles()
-    current_profile = profiles.get(hotel_id, {})
 
-    # 1. 构建小时范围
+    # 1. 构建小时范围（在加锁前预计算，避免在锁内做 IO）
     h_start = week_index * 168
     h_end   = h_start + 167
     week_label = f"sim_week_{week_index + 1:02d}"
 
-    # 2. 提取记录（DB 优先，CSV 兜底）
+    # 2. 提取记录（DB 优先，CSV 兜底）—— 读取不需要文件锁
     records = build_records_from_sqlite(db_path, hotel_id, week_label, h_start, h_end)
     if not records and csv_fallback:
         records = build_records_from_csv(csv_fallback, hotel_id, week_label)
 
     if not records:
         logger.info("[%s] 第 %d 周无数据，保留旧画像", hotel_id, week_index + 1)
-        return current_profile
+        return load_profiles().get(hotel_id, {})
 
-    # 3. 汇总 + 更新画像
+    # 3. 汇总（计算结果也在锁外完成）
     summary = loop.summarize(records)
-    updated = loop.update_hotel_profile(current_profile, summary, learning_rate=learning_rate)
 
-    # 4. 附加元数据
-    updated["last_calibration_week"]  = week_label
-    updated["last_calibration_ts"]    = datetime.now(timezone.utc).isoformat()
-    updated["last_week_records_count"] = len(records)
-    updated["last_week_adr"]           = round(summary.get("adr", 0.0), 2)
-    updated["hotel_profile_version"]   = "V6"
+    # P0 FIX (Gemini): 用文件锁保护 load → 修改 → save 的 read-modify-write 原子性
+    # 防止 S2 和 S3 在同一周结束时并发写入导致画像相互覆盖
+    _lock_path = _PROFILE_STORE.with_suffix(".json.lock")
+    with open(_lock_path, "w") as _lf:
+        fcntl.flock(_lf, fcntl.LOCK_EX)          # 获取互斥锁（阻塞直到可用）
+        try:
+            profiles = load_profiles()
+            current_profile = profiles.get(hotel_id, {})
 
-    # 5. 持久化
-    profiles[hotel_id] = updated
-    save_profiles(profiles)
+            # 4. 更新画像
+            updated = loop.update_hotel_profile(current_profile, summary, learning_rate=learning_rate)
+            updated["last_calibration_week"]   = week_label
+            updated["last_calibration_ts"]     = datetime.now(timezone.utc).isoformat()
+            updated["last_week_records_count"] = len(records)
+            updated["last_week_adr"]           = round(summary.get("adr", 0.0), 2)
+            updated["hotel_profile_version"]   = "V6"
+
+            # 5. 持久化
+            profiles[hotel_id] = updated
+            save_profiles(profiles)
+        finally:
+            fcntl.flock(_lf, fcntl.LOCK_UN)      # 释放锁
 
     logger.info(
         "[%s] 第 %d 周校准完成 | ADR %.0f→%.0f | 记录数 %d | 校准次数 %d",

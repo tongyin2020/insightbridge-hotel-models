@@ -23,7 +23,7 @@ WATCHDOG_PID = BASE_DIR / "watchdog.pid"
 DB_PATH      = BASE_DIR / "results.db"
 LOG_PATH     = BASE_DIR / "watchdog.log"
 
-WECOM_PATH   = BASE_DIR.parent / "wecom_push.py"
+WECOM_PATH   = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/Hotel_Model_Rvisions/wecom_push.py")
 
 # ── 参数 ───────────────────────────────────────────────────────────────────
 CHECK_INTERVAL  = 300    # 每 5 分钟检查一次

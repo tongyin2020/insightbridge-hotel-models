@@ -1,3 +1,4 @@
+import math
 from .schemas_v6 import MarketSignal, RevenueDecisionV6
 from .elasticity_engine_v6 import ElasticityEngineV6, ElasticityProfile
 
@@ -17,7 +18,7 @@ class RevenueDecisionLayerV6:
         market = max(1.0, market_signal.market_price)
         step = self._step(star_rating)
         best = None
-        price = int(floor_price)
+        price = math.ceil(floor_price)  # P1 FIX: ceil 而非 int()，保证首个候选价格不低于底价
         while price <= ceiling_price:
             occ = self.elasticity.predict_occupancy(price, market, base_occ, elasticity_profile, market_signal.demand_state)
             revpar = price * occ
@@ -36,7 +37,7 @@ class RevenueDecisionLayerV6:
                 predicted_occupancy=round(safe_occ, 4),
                 predicted_revpar=round(safe_price * safe_occ, 2),
                 baseline_revpar=round(market * base_occ, 2),
-                lift_pct=0.0, risk_score=100.0, opportunity_score=0.0,
+                lift_pct=0.0, risk_score=999.0, opportunity_score=0.0,  # P1 FIX: 999.0 作为配置错误sentinel，区别于正常风险最大值~91.7
                 confidence=40.0, objective_value=0.0,
                 reason={"error": "floor_price > ceiling_price", "market_price": market},
             )
