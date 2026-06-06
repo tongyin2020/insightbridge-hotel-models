@@ -704,7 +704,10 @@ hotel_settings = SimpleNamespace(
     floor_price=float(payload.get("floor_price", 750)),
     ceiling_price=float(payload.get("ceiling_price", 1015)),
 )
-result = recommend(payload, hotel_settings)  # Bug Fix: recommend()只接受(data, hotel_settings=None)，无objective_mode参数
+# Bug Fix: recommend() 用点号访问属性(data.base_price等)，payload是dict会报AttributeError
+# 将dict转为SimpleNamespace，使点号访问生效
+data = SimpleNamespace(**payload)
+result = recommend(data, hotel_settings)
 print(json.dumps(result))
 """
     payload = dict(payload)
