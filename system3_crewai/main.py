@@ -80,6 +80,11 @@ except ImportError as e:
 from data_fetchers.real_data import get_all_real_signals
 from data_fetchers.scenario_engine import get_scenario, get_scenario_stats, SCENARIOS
 from tools.firecrawl_scrapers import get_all_firecrawl_signals
+# Bug Fix: pricing_engine.py 内部 from app.services.* 需要 mare_engine/api 在 sys.path
+_MARE_API_PATH = str(BASE_DIR.parent / "system1_chatgpt_harness" / "mare_engine" / "api")
+if _MARE_API_PATH not in sys.path:
+    sys.path.insert(0, _MARE_API_PATH)
+
 import pricing_engine as pe
 from objective_modes import ObjectiveMode, get_objective_weights
 from recommendations import RecommendationRequest

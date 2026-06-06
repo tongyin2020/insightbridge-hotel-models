@@ -628,6 +628,11 @@ load_dotenv(Path(__file__).parent.parent / ".env")   # 加载环境变量（MakC
 from data_fetchers.real_data import get_all_real_signals
 from data_fetchers.scenario_engine import get_scenario, get_scenario_stats, HotelScenario, SCENARIOS
 
+# Bug Fix: pricing_engine.py 内部 from app.services.* 需要 mare_engine/api 在 sys.path
+_MARE_API_PATH = str(Path(__file__).resolve().parent.parent / "system1_chatgpt_harness" / "mare_engine" / "api")
+if _MARE_API_PATH not in sys.path:
+    sys.path.insert(0, _MARE_API_PATH)
+
 import pricing_engine as pe
 from objective_modes import ObjectiveMode, apply_objective_adjustment, get_objective_weights
 from recommendations import RecommendationRequest

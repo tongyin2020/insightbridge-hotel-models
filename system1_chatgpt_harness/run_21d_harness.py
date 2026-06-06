@@ -704,7 +704,7 @@ hotel_settings = SimpleNamespace(
     floor_price=float(payload.get("floor_price", 750)),
     ceiling_price=float(payload.get("ceiling_price", 1015)),
 )
-result = recommend(payload, hotel_settings, objective_mode=objective_mode)
+result = recommend(payload, hotel_settings)  # Bug Fix: recommend()只接受(data, hotel_settings=None)，无objective_mode参数
 print(json.dumps(result))
 """
     payload = dict(payload)
