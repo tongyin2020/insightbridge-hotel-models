@@ -27,6 +27,20 @@ class RevenueDecisionLayerV6:
                 best = {"price": price, "occ": occ, "revpar": revpar, "objective": objective, "trevpar": trevpar}
             price += step
 
+        # P0 FIX (Gemini/DeepSeek): guard against empty search space (floor > ceiling)
+        if best is None:
+            safe_price = float(floor_price)
+            safe_occ = max(0.05, min(0.98, base_occ))
+            return RevenueDecisionV6(
+                recommended_price=round(safe_price, 2),
+                predicted_occupancy=round(safe_occ, 4),
+                predicted_revpar=round(safe_price * safe_occ, 2),
+                baseline_revpar=round(market * base_occ, 2),
+                lift_pct=0.0, risk_score=100.0, opportunity_score=0.0,
+                confidence=40.0, objective_value=0.0,
+                reason={"error": "floor_price > ceiling_price", "market_price": market},
+            )
+
         baseline_revpar = market * base_occ
         lift = (best["revpar"] - baseline_revpar) / baseline_revpar * 100 if baseline_revpar > 0 else 0.0
         risk = self._risk(best["price"], market, best["occ"], market_signal)

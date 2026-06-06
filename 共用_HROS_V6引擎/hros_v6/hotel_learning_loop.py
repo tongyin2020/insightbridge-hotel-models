@@ -29,14 +29,45 @@ class HotelLearningLoop:
         }
 
     def update_hotel_profile(self, current_profile: dict, weekly_summary: dict, learning_rate: float = 0.25) -> dict:
-        """Simple exponential smoothing profile update. Replace with LightGBM later after enough samples."""
+        """Simple exponential smoothing profile update. Replace with LightGBM later after enough samples.
+
+        Fix P1-A (DeepSeek/Gemini): channel_mix now also uses exponential smoothing instead of
+        direct replacement, preventing single-week anomalies from overwriting historical mix data.
+
+        Fix P1-B: calibration_status semantics clarified:
+          "learning"            — < 4 weeks, profile still stabilising
+          "first_calibration"   — >= 4 weeks, profile has completed at least one full calibration cycle
+        """
+        if learning_rate <= 0 or learning_rate > 1:
+            raise ValueError(f"learning_rate must be in (0, 1], got {learning_rate}")
+
         profile = dict(current_profile or {})
         profile["baseline_adr"] = self._smooth(profile.get("baseline_adr"), weekly_summary.get("adr"), learning_rate)
-        profile["channel_mix"] = weekly_summary.get("channel_mix", profile.get("channel_mix", {}))
-        profile["room_type_adr"] = weekly_summary.get("room_type_adr", profile.get("room_type_adr", {}))
-        profile["channel_adr"] = weekly_summary.get("channel_adr", profile.get("channel_adr", {}))
+
+        # --- P1-A FIX: smooth channel_mix per-channel rather than direct overwrite ---
+        new_mix = weekly_summary.get("channel_mix", {})
+        old_mix = profile.get("channel_mix", {})
+        all_channels = set(new_mix) | set(old_mix)
+        smoothed_mix = {}
+        for ch in all_channels:
+            smoothed_mix[ch] = self._smooth(old_mix.get(ch), new_mix.get(ch), learning_rate)
+        # Re-normalise so mix sums to 1.0 (smoothing can shift the sum slightly)
+        total = sum(smoothed_mix.values())
+        if total > 0:
+            smoothed_mix = {k: v / total for k, v in smoothed_mix.items()}
+        profile["channel_mix"] = smoothed_mix if smoothed_mix else old_mix
+
+        # room_type_adr and channel_adr: smooth per key as well
+        for key in ("room_type_adr", "channel_adr"):
+            new_d = weekly_summary.get(key, {})
+            old_d = profile.get(key, {})
+            merged = {k: self._smooth(old_d.get(k), new_d.get(k), learning_rate)
+                      for k in set(new_d) | set(old_d)}
+            profile[key] = merged if merged else old_d
+
         profile["calibration_weeks"] = int(profile.get("calibration_weeks", 0)) + 1
-        profile["calibration_status"] = "first_calibration" if profile["calibration_weeks"] >= 4 else "learning"
+        # P1-B: semantics — "learning" while < 4 weeks, "first_calibration" once >= 4 weeks
+        profile["calibration_status"] = "learning" if profile["calibration_weeks"] < 4 else "first_calibration"
         return profile
 
     def _smooth(self, old, new, lr):
