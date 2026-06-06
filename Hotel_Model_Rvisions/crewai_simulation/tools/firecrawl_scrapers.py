@@ -5,18 +5,44 @@ firecrawl_scrapers.py — 用 Firecrawl v4 尝试抓取 Playwright 无法获取�
   border_flow     (权重0.18) — 口岸过境客流
   zhuhai_sat      (权重0.12) — 珠海酒店饱和度（溢出效应）
   ota_booking_pace(权重0.12) — OTA平台实时预订节奏
+
+架构升级（2026-06）：
+  优先从 Firecrawl Monitor webhook 缓存读取（每2小时自动更新，节省积分）
+  Monitor 端点：https://intelligence.insightbridge.global/api/monitor/latest/{key}
+  直接API调用作为备用（Monitor缓存超2小时或无数据时）
 """
 
 from __future__ import annotations
-import os, re, json, time, sqlite3
+import os, re, json, time, sqlite3, requests as _requests
 from datetime import datetime, timedelta
 from pathlib import Path
+
+# ── Monitor 缓存端点 ──────────────────────────────────────────────────────────
+MONITOR_BASE = "https://intelligence.insightbridge.global/api/monitor/latest"
+MONITOR_STALE_SECS = 7200   # 2小时内认为新鲜
+
+def _read_monitor_cache(key: str) -> dict | None:
+    """
+    从 Firecrawl Monitor webhook 缓存读取最新信号。
+    返回 None 表示无数据或数据过期，调用方应降级到直接API。
+    """
+    try:
+        r = _requests.get(f"{MONITOR_BASE}/{key}", timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            if data.get("signal") is not None and not data.get("stale", True):
+                return data
+    except Exception:
+        pass
+    return None
 
 try:
     from firecrawl import Firecrawl   # firecrawl-py v4+
     FIRECRAWL_OK = True
 except ImportError:
     FIRECRAWL_OK = False
+    import logging as _log
+    _log.getLogger(__name__).warning("firecrawl-py 未安装，所有FC信号将降级为模拟值")
 
 CACHE_DB  = Path(__file__).parent.parent / "crewai_cache.db"
 CACHE_TTL = 3600  # 1小时内复用缓存，节省免费额度
@@ -90,6 +116,13 @@ def _scrape(app, url: str, wait_ms: int = 3000) -> str:
 #  因子1：border_flow — 口岸过境量代理 (权重0.18)
 # ══════════════════════════════════════════════════════════════════════
 def fetch_border_flow_signal() -> dict:
+    # 1. 优先读 Monitor webhook 缓存（每2小时自动更新，免费）
+    monitor_data = _read_monitor_cache("border_flow")
+    if monitor_data:
+        return {"signal": monitor_data["signal"], "source": monitor_data["source"],
+                "raw": monitor_data.get("raw",""), "method": "monitor_cache"}
+
+    # 2. 本地缓存
     cached = _cache_get("border_flow")
     if cached:
         return cached
@@ -245,7 +278,7 @@ def fetch_ota_booking_pace_signal(checkin: str) -> dict:
         total_hotels = max(1, len(re.findall(r'MOP\s*[\d,]+', md)))
 
         pace = min(1.0, urgency_count * 0.05 + sold_out / total_hotels * 0.5)
-        if md and len(md) > 500:  # 确认抓到了内容
+        if md and len(md) > 10000:  # 确认抓到了完整Booking.com搜索结果页（通常>100KB）
             result = {"signal": round(max(0.0, pace), 3),
                       "urgency_count": urgency_count,
                       "sold_out": sold_out,
@@ -308,7 +341,41 @@ def fetch_agoda_prices(checkin: str, checkout: str) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  汇总入口
+#  因子5：event_density — 澳门旅游局活动密度 (System1已有，System3补充)
+# ══════════════════════════════════════════════════════════════════════
+def fetch_event_density_signal() -> dict:
+    """从澳门旅游局活动日历抓取活动密度信号。"""
+    cached = _cache_get("event_density")
+    if cached:
+        return cached
+
+    app = _get_app()
+    result = {"event_density": 0.0, "event_ticket_sales": 0.0,
+              "source": "simulated", "raw": ""}
+    if not app:
+        return result
+
+    try:
+        md = _scrape(app, "https://www.macaotourism.gov.mo/en/events/calendar")
+        if md:
+            major   = len(re.findall(
+                r'Grand Prix|Fireworks|Dragon Boat|Chinese New Year|Major Event|Formula|Festival|Carnival',
+                md, re.I))
+            holiday = len(re.findall(
+                r'Public Holiday|National Day|Labour Day|Mid-Autumn|Golden Week', md, re.I))
+            density = round(min(1.0, 0.15 * major + 0.05 * holiday), 3)
+            ticket  = round(min(1.0, 0.12 * major + 0.03 * holiday), 3)
+            result  = {"event_density": density, "event_ticket_sales": ticket,
+                       "source": "firecrawl_tourism", "raw": f"major:{major} holiday:{holiday}"}
+    except Exception as e:
+        result["raw"] = f"err:{e}"
+
+    _cache_set("event_density", result)
+    return result
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  汇总入口 — 5个因子全部覆盖
 # ══════════════════════════════════════════════════════════════════════
 def get_all_firecrawl_signals(checkin: str, checkout: str) -> dict:
     """整合所有Firecrawl抓取结果，返回可直接用于模型的信号字典。"""
@@ -318,15 +385,17 @@ def get_all_firecrawl_signals(checkin: str, checkout: str) -> dict:
     zhuhai = fetch_zhuhai_saturation_signal(checkin, checkout)
     pace   = fetch_ota_booking_pace_signal(checkin)
     agoda  = fetch_agoda_prices(checkin, checkout)
+    event  = fetch_event_density_signal()
 
-    # 统计真实抓取成功数
+    # 统计真实抓取成功数（5因子）
     real = [s for s in [border["source"], zhuhai["source"],
-                         pace["source"], agoda["source"]]
+                         pace["source"], agoda["source"], event["source"]]
             if s not in ("simulated", "unavailable", "fallback")]
-    print(f"{len(real)}/4因子真实 | "
-          f"border={border['signal']}({border['source'][:12]}) "
-          f"zhuhai={zhuhai['signal']}({zhuhai['source'][:12]}) "
-          f"pace={pace['signal']}({pace['source'][:12]})", flush=True)
+    print(f"{len(real)}/5因子真实 | "
+          f"border={border['signal']}({border['source'][:10]}) "
+          f"zhuhai={zhuhai['signal']}({zhuhai['source'][:10]}) "
+          f"pace={pace['signal']}({pace['source'][:10]}) "
+          f"event={event['event_density']}({event['source'][:10]})", flush=True)
 
     return {
         "border_flow_fc":       border["signal"],
@@ -338,7 +407,11 @@ def get_all_firecrawl_signals(checkin: str, checkout: str) -> dict:
         "agoda_prices_23":      agoda.get("prices_23star", []),
         "agoda_avg_23":         agoda.get("avg_23star", 0.0),
         "agoda_source":         agoda["source"],
+        "event_density_fc":     event["event_density"],
+        "event_ticket_sales_fc":event["event_ticket_sales"],
+        "event_source":         event["source"],
         "_border_detail":       border,
         "_zhuhai_detail":       zhuhai,
         "_pace_detail":         pace,
+        "_event_detail":        event,
     }

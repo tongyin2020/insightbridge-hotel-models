@@ -45,16 +45,16 @@ for detail, cnt in breakdown:
 
 # ── 每日摘要 ─────────────────────────────────────────────────────────────────
 print("\n  【每日摘要】")
-print(f"  {'日期':<12} {'2-3星均价':>12} {'直销均价':>12} {'异常数':>8} {'状态':>8}")
+print(f"  {'日期':<12} {'3星均价':>12} {'直销均价':>12} {'异常数':>8} {'状态':>8}")
 print("  " + "-"*56)
 rows = c.execute("SELECT date_str, avg_rec_price_23, avg_rec_price_45, anomaly_count, total_runs FROM daily_summaries ORDER BY day").fetchall()
 for r in rows:
     status = "✓ OK" if r[3] == 0 else f"⚠ {r[3]}项"
     print(f"  {r[0]:<12} MOP {r[1]:>8.0f}  MOP {r[2]:>8.0f}  {r[3]:>8}  {status:>8}")
 
-# ── 价格区间分析（2-3星）────────────────────────────────────────────────────
-print("\n  【2-3星房价分布（MARE模型）】")
-for hotel_id in c.execute("SELECT DISTINCT hotel_id FROM hourly_runs WHERE model_type='MARE_23_STAR'").fetchall():
+# ── 价格区间分析（3星）────────────────────────────────────────────────────
+print("\n  【3星房价分布（MARE模型）】")
+for hotel_id in c.execute("SELECT DISTINCT hotel_id FROM hourly_runs WHERE model_type='MARE_3_STAR'").fetchall():
     hid = hotel_id[0]
     stats = c.execute(
         "SELECT MIN(rec_price), MAX(rec_price), AVG(rec_price), COUNT(*) FROM hourly_runs WHERE hotel_id=? AND rec_price IS NOT NULL",

@@ -41,7 +41,7 @@ agentops_key = os.getenv("AGENTOPS_API_KEY", "")
 if agentops_key and agentops_key != "your_agentops_key_here":
     try:
         import agentops
-        agentops.init(agentops_key, default_tags=["macau-hotel", "crewai", "simulation"])
+        agentops.init(agentops_key, instrument_llm_calls=False, default_tags=["macau-hotel", "crewai", "simulation"])
         USE_AGENTOPS = True
         print("✓ AgentOps 监控已启动")
     except Exception as e:
@@ -71,14 +71,13 @@ from run_simulation import (
     _build_hotel_roster, _jitter, MACAU_HOLIDAYS_2026,
     run_23star_test, run_director_crm_test, run_45star_test,
     detect_anomalies,
-    compute_dynamic_base_price,   # DSEC×85% + MakCorps×15% 动态base_price
+    compute_dynamic_base_price,   # DSEC×75% + OTA×25% 动态base_price
 )
 
 # ── Phase 2 弹性引擎 ──────────────────────────────────────────────────
-import sys as _sys_elast
 _COLLECTOR_DIR_CREWAI = "/Users/tongyin/Desktop/InsightBridge_模型测试系统/hotel_collector"
-if _COLLECTOR_DIR_CREWAI not in _sys_elast.path:
-    _sys_elast.path.insert(0, _COLLECTOR_DIR_CREWAI)
+if _COLLECTOR_DIR_CREWAI not in sys.path:
+    sys.path.insert(0, _COLLECTOR_DIR_CREWAI)
 try:
     from elasticity_engine import optimize_price as _elasticity_optimize
     _ELASTICITY_OK_CREWAI = True
@@ -94,10 +93,9 @@ except ImportError:
         )
 
 # ── 切换为澳门旅游局官方76家真实酒店 ─────────────────────────────────────────
-import sys as _sys_main
 _SIM_DIR_MAIN = "/Users/tongyin/Desktop/Hotel Model Rvisions/simulation_test"
-if _SIM_DIR_MAIN not in _sys_main.path:
-    _sys_main.path.insert(0, _SIM_DIR_MAIN)
+if _SIM_DIR_MAIN not in sys.path:
+    sys.path.insert(0, _SIM_DIR_MAIN)
 try:
     from hotel_roster_76 import HOTELS_3STAR as HOTELS_23_STAR, HOTELS_45STAR as HOTELS_45_STAR, ALL_HOTELS_76 as ALL_HOTELS
 except ImportError:
@@ -260,6 +258,19 @@ def get_market_signal(sim_hour: int, real_data: dict, fc_data: dict) -> dict:
     except Exception:
         pass
 
+    # event_density：优先Firecrawl真实抓取，降级到real_data或场景值
+    fc_event_density = fc_data.get("event_density_fc")
+    fc_event_src     = fc_data.get("event_source", "simulated")
+    fc_event_ticket  = fc_data.get("event_ticket_sales_fc", 0.0)
+    if fc_event_density is not None and fc_event_src not in ("simulated", "fallback", "unavailable"):
+        event_density_val  = round(max(0.0, min(1.0, fc_event_density)), 3)
+        event_ticket_val   = round(max(0.0, min(1.0, fc_event_ticket)), 3)
+        event_source       = fc_event_src
+    else:
+        event_density_val  = real_data.get("event_ticket_sales", 0.0)  # real_data已有
+        event_ticket_val   = event_density_val
+        event_source       = "real_data_fallback"
+
     return {
         "season": season,
         "is_weekend": is_weekend,
@@ -269,7 +280,9 @@ def get_market_signal(sim_hour: int, real_data: dict, fc_data: dict) -> dict:
         "weather_signal":     real_data.get("weather", 0.0),
         "weather_celsius":    real_data.get("weather_celsius", 25.0),
         "flight_ferry":       real_data.get("flight_ferry", 0.1),
-        "event_ticket_sales": real_data.get("event_ticket_sales", 0.0),
+        "event_ticket_sales": event_ticket_val,
+        "event_density":      event_density_val,
+        "event_source":       event_source,
         "visitors_stats":     real_data.get("visitors_stats", 0.0),
         # DSEC 澳门统计局月度需求信号
         "dsec_market_occ":    dsec_market_occ,
@@ -398,12 +411,15 @@ def main():
                 # ── Phase 2：弹性引擎 RevPAR 最优化 ──────────────────────
                 if _ELASTICITY_OK_CREWAI and r.get("recommended_price", 0) > 0:
                     mkt_price = float(_ota_ref_45 if hotel["star"] >= 4 else _ota_ref_23)
+                    # 修复(2026-06-02 P3-A): 防止OTA淡季低价将弹性搜索基准拉至不合理水平
+                    _mkt_floor = {3: 680, 4: 900, 5: 1400}
+                    mkt_price = max(mkt_price, _mkt_floor.get(hotel.get("star", 3), 680))
                     er = _elasticity_optimize(
                         candidate_price = r["recommended_price"],
                         market_price    = mkt_price,
                         star            = hotel["star"],
                         district        = hotel.get("district", "NAPE"),
-                        demand_level    = signal.get("demand_state", "NORMAL"),
+                        demand_level    = r.get("demand_state", signal.get("demand_state", "NORMAL")),
                         season          = signal.get("season", "normal"),
                         hotel_id        = hotel.get("hotel_id"),
                     )

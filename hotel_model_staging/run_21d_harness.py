@@ -4,7 +4,6 @@
 This script is designed to run on the user's Mac from a Python terminal.
 It uses:
 - Firecrawl for public web signals
-- MakCorps for OTA market prices
 - AgentOps for run monitoring
 - Direct Python subprocess calls into the two backend model kernels
 
@@ -32,10 +31,9 @@ import requests
 from dotenv import load_dotenv
 
 # ── 声誉情感引擎 + DSEC市场数据（hotel_collector 同目录）
-import sys as _sys
 _SENTIMENT_DIR = Path("/Users/tongyin/Desktop/InsightBridge_模型测试系统/hotel_collector")
-if str(_SENTIMENT_DIR) not in _sys.path:
-    _sys.path.insert(0, str(_SENTIMENT_DIR))
+if str(_SENTIMENT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SENTIMENT_DIR))
 try:
     from sentiment_engine import get_reputation_signals as _get_rep_signals
     _SENTIMENT_OK = True
@@ -75,8 +73,8 @@ except ImportError:
 
 # ── 自主获客模型（从 simulation_test 复用）─────────────────────────────────
 _SIM_DIR = Path("/Users/tongyin/Desktop/Hotel Model Rvisions/simulation_test")
-if str(_SIM_DIR) not in _sys.path:
-    _sys.path.insert(0, str(_SIM_DIR))
+if str(_SIM_DIR) not in sys.path:
+    sys.path.insert(0, str(_SIM_DIR))
 try:
     from run_simulation import run_45star_test as _run_selfacq
     from data_fetchers.scenario_engine import SCENARIOS as _SIM_SCENARIOS
@@ -225,12 +223,12 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
     w_bar = 1.0 - w_ota
 
     # ── 四层优先级定价参考（MakCorps已停用）────────────────────────────────
-    # 层1：Shifter真实官网BAR → 85%BAR + 15%DSEC背景，再与OTA权重混合
+    # 层1：Shifter真实官网BAR → 75%BAR + 25%DSEC背景，再与OTA权重混合
     # 层2：Shifter真实OTA价折算BAR → 85%折算BAR + 15%DSEC，再与OTA权重混合
     # 层3：冷启动 — DSEC统计局100%作为唯一历史参考（MakCorps已停用，不再混合fallback）
     # 层4：完全冷启动兜底（无任何真实数据）
     if real_bar_avg is not None:
-        # 层1：有Shifter真实BAR — 85%真实BAR + 15%DSEC市场背景
+        # 层1：有Shifter真实BAR — 75%真实BAR + 25%DSEC市场背景
         historical_ref = (0.75 * real_bar_avg + 0.25 * dsec_adr_ref
                           if dsec_adr_ref > 0 else real_bar_avg)
         base = w_bar * historical_ref + w_ota * ota_estimate
@@ -375,6 +373,26 @@ def init_agentops() -> None:
 
 
 def firecrawl_event_snapshot() -> tuple[bool, str]:
+    # 1. 优先读 Monitor webhook 缓存（每2小时自动更新，节省积分）
+    try:
+        cache_resp = requests.get(
+            "https://intelligence.insightbridge.global/api/monitor/latest/event_density",
+            timeout=5
+        )
+        if cache_resp.status_code == 200:
+            d = cache_resp.json()
+            if d.get("signal") is not None and not d.get("stale", True):
+                # Reconstruct markdown-like string from signal for score_event_markdown
+                sig = d["signal"]
+                raw = d.get("raw", "")
+                # Build synthetic markdown to pass through score_event_markdown
+                major_count = int(sig / 0.15) if sig > 0 else 0
+                fake_md = " ".join(["Major Event"] * major_count) + " " + raw
+                return True, fake_md
+    except Exception:
+        pass
+
+    # 2. Fallback: direct Firecrawl API call
     key = os.getenv("FIRECRAWL_API_KEY", "").strip()
     if not key:
         return False, ""
@@ -417,6 +435,56 @@ def makcorps_market_snapshot() -> tuple[bool, dict[str, float], float, float]:
     return False, {}, 0.0, 0.0
 
 
+def _fc_search_signal(query: str, wan_baseline: float = 20.0, wan_range: float = 15.0) -> tuple:
+    """通用 Firecrawl 搜索信号提取，返回 (signal, source, raw)。"""
+    key = os.getenv("FIRECRAWL_API_KEY", "").strip()
+    if not key:
+        return 0.0, "no_key", ""
+    try:
+        resp = requests.post(
+            "https://api.firecrawl.dev/v2/search",
+            headers={"Authorization": f"Bearer {key}"},
+            json={"query": query, "limit": 5},
+            timeout=20,
+        )
+        if resp.status_code != 200:
+            return 0.0, "fc_error", ""
+        items = (resp.json().get("data") or [])
+        texts = " ".join(str(it.get("description") or it.get("markdown") or "") for it in items)
+        nums = re.findall(r'(\d+(?:\.\d+)?)\s*[萬万]', texts)
+        if nums:
+            val = float(nums[0])
+            sig = round(max(-1.0, min(1.0, (val - wan_baseline) / wan_range)), 3)
+            return sig, "firecrawl_search", f"{val}万"
+        pos = sum(1 for k in ["上升","增加","爆满","高峰","创新高"] if k in texts)
+        neg = sum(1 for k in ["下降","减少","冷清","低迷"] if k in texts)
+        if pos > neg: return 0.3, "fc_sentiment_pos", f"pos:{pos}"
+        if neg > pos: return -0.2, "fc_sentiment_neg", f"neg:{neg}"
+        return 0.0, "fc_no_number", ""
+    except Exception as e:
+        return 0.0, "fc_exception", str(e)[:40]
+
+
+def _fc_scrape_signal(url: str) -> tuple:
+    """Firecrawl scrape 单页，返回 (markdown, source)。"""
+    key = os.getenv("FIRECRAWL_API_KEY", "").strip()
+    if not key:
+        return "", "no_key"
+    try:
+        resp = requests.post(
+            "https://api.firecrawl.dev/v2/scrape",
+            headers={"Authorization": f"Bearer {key}"},
+            json={"url": url, "formats": ["markdown"]},
+            timeout=30,
+        )
+        if resp.status_code == 200:
+            md = (resp.json().get("data") or {}).get("markdown", "")
+            return md, "firecrawl_scrape"
+        return "", f"http_{resp.status_code}"
+    except Exception as e:
+        return "", f"exception:{str(e)[:30]}"
+
+
 def build_external_snapshot(ts: datetime) -> ExternalSnapshot:
     event_ok, markdown = firecrawl_event_snapshot()
     event_density, event_ticket_sales = score_event_markdown(markdown)
@@ -425,10 +493,40 @@ def build_external_snapshot(ts: datetime) -> ExternalSnapshot:
     weekend = 1.0 if ts.weekday() >= 5 else 0.0
     holiday = 0.7 if event_density >= 0.45 else 0.1
 
-    # Until dedicated weather / visitor / border / airport feeds are added,
-    # keep these as disciplined proxies instead of pretending they are real.
+    # ── Firecrawl: border_flow (口岸客流) ──────────────────────────────────
+    today = ts.strftime("%Y年%m月%d日")
+    checkin = (ts + timedelta(days=1)).strftime("%Y-%m-%d")
+    checkout = (ts + timedelta(days=2)).strftime("%Y-%m-%d")
+
+    fc_border, fc_border_src, _ = _fc_search_signal(
+        f"澳门口岸 过境 旅客 {today} 人数 统计", wan_baseline=20.0, wan_range=15.0)
+    if fc_border_src not in ("no_key", "fc_error", "fc_exception", "fc_no_number"):
+        border_flow = round(max(-1.0, min(1.0, fc_border)), 3)
+    else:
+        # 公式 fallback
+        border_flow = round(min(1.0, 0.35 + weekend * 0.15 + event_density * 0.3), 3)
+
+    # ── Firecrawl: zhuhai_saturation (珠海酒店饱和度) ──────────────────────
+    fc_zhuhai, fc_zhuhai_src, _ = _fc_search_signal(
+        f"珠海酒店 {checkin} 价格 今晚 预订", wan_baseline=0.0, wan_range=1.0)
+    if fc_zhuhai_src not in ("no_key", "fc_error", "fc_exception"):
+        zhuhai_sat = round(max(0.0, min(1.0, 0.35 + fc_zhuhai * 0.2)), 3)
+    else:
+        zhuhai_sat = round(0.3 + event_density * 0.15 + weekend * 0.1, 3)
+
+    # ── Firecrawl: ota_booking_pace (Booking.com澳门可用房) ────────────────
+    bcom_url = (f"https://www.booking.com/searchresults.html"
+                f"?ss=Macau&checkin={checkin}&checkout={checkout}"
+                f"&group_adults=2&no_rooms=1&sb=1")
+    bcom_md, bcom_src = _fc_scrape_signal(bcom_url)
+    if bcom_md and bcom_src == "firecrawl_scrape":
+        avail_count = len(re.findall(r'MOP\s*[\d,]+', bcom_md))
+        ota_pace = round(min(1.0, max(0.0, 1.0 - avail_count / 50.0)), 3)
+    else:
+        ota_pace = round(0.35 + event_density * 0.25 + weekend * 0.1, 3)
+
+    # ── 其他信号 ────────────────────────────────────────────────────────────
     visitors_stats = round(min(1.0, 0.3 + event_density * 0.5), 3)
-    border_flow = round(min(1.0, 0.35 + weekend * 0.15 + event_density * 0.3), 3)
     flight_ferry = round(min(1.0, 0.25 + event_density * 0.35), 3)
     weather = 0.0
 
@@ -908,11 +1006,11 @@ def main() -> int:
             }
             for hotel in ALL_HOTELS_GPT:
                 # 修正(2026-06-01)：优先使用DSEC星级专属ADR×1.05作为compute_dynamic_base_price的OTA参考
-            # 避免3★酒店使用混合OTA均价1120（含4-5★权重）→ 推高base_price → 推高弹性搜索上限
-            _dsec_ref = (snapshot.dsec_cold_adr or {}).get(hotel["star"], 0)
-            ota_ref = round(_dsec_ref * 1.05, 0) if _dsec_ref > 0 else (
-                snapshot.competitor_price if hotel["star"] <= 3 else snapshot.upper_tier_adr
-            )
+                # 避免3★酒店使用混合OTA均价1120（含4-5★权重）→ 推高base_price → 推高弹性搜索上限
+                _dsec_ref = (snapshot.dsec_cold_adr or {}).get(hotel["star"], 0)
+                ota_ref = round(_dsec_ref * 1.05, 0) if _dsec_ref > 0 else (
+                    snapshot.competitor_price if hotel["star"] <= 3 else snapshot.upper_tier_adr
+                )
                 _tier = {3: "3_star", 4: "4_star", 5: "5_star"}.get(hotel["star"], "3_star")
                 base = compute_dynamic_base_price(
                     hotel_id=hotel["hotel_id"],
@@ -970,3 +1068,66 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HROS V5 集成：为 Harness 记录追加 V5 对比字段
+# ══════════════════════════════════════════════════════════════════════════════
+
+def enrich_with_hros_v5(record: dict, snapshot) -> dict:
+    """
+    给 Harness JSONL 记录追加 HROS V5 字段，用于新旧算法对比。
+    不修改原有字段，全部新增 _v5 后缀。
+    """
+    try:
+        import sys, os
+        _p = os.path.expanduser(
+            "~/Desktop/InsightBridge_HROS_V5_Final/共用_HROS_V5引擎")
+        if _p not in sys.path:
+            sys.path.insert(0, _p)
+
+        from hros.direct_ltv_engine import DirectLTVEngine
+        from hros.risk_engine import calculate_price_risk
+        from hros.opportunity_engine import calculate_opportunity_score
+
+        price = record.get("result", {}).get("recommended_price") or \
+                record.get("result", {}).get("direct_offer_price", 0)
+        market = float(getattr(snapshot, "competitor_price", 0) or price or 1000)
+
+        # Direct LTV V5（含折现）
+        occ = float(getattr(snapshot, "current_occupancy", 0.72))
+        result = record.get("result", {})
+        if "direct_offer_price" in result and result["direct_offer_price"]:
+            ota_gross = result.get("ota_standard_price", market)
+            ltv_dec = DirectLTVEngine().evaluate_direct_offer(
+                direct_price=float(result["direct_offer_price"]),
+                ota_gross_price=float(ota_gross or market),
+                ota_commission_rate=0.185 if getattr(snapshot, "star", 4) >= 5 else 0.15,
+                repeat_probability=0.20,
+                future_margin=700.0,
+                discount_rate=0.10,
+            )
+            record["direct_ltv_v5"] = ltv_dec.direct_ltv
+            record["direct_advantage_v5"] = ltv_dec.direct_advantage
+            record["discounted_future_value_v5"] = ltv_dec.discounted_future_value
+
+        # Risk & Opportunity V5
+        signals = {
+            "event_density":     float(getattr(snapshot, "event_ticket_sales", 0) or 0),
+            "border_flow":       float(getattr(snapshot, "border_flow", 0) or 0),
+            "ota_booking_pace":  float(getattr(snapshot, "ota_booking_pace", 0.5) or 0.5),
+            "is_holiday":        bool(getattr(snapshot, "holiday", 0)),
+            "is_weekend":        bool(getattr(snapshot, "weekend", 0)),
+            "occupancy":         occ,
+        }
+        record["risk_score_v5"] = calculate_price_risk(
+            price=float(price or market),
+            market_price=market,
+            predicted_occ=occ,
+            ota_booking_pace=signals["ota_booking_pace"],
+        )
+        record["opportunity_score_v5"] = calculate_opportunity_score(signals)
+
+    except Exception:
+        pass
+    return record

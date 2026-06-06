@@ -3,7 +3,7 @@ InsightBridge — 澳门76家真实酒店数据采集器
 hotel_data_collector.py
 ================================================
 每天 09:00 / 22:00 由 launchd 触发
-通过 Shifter 住宅代理采集76家酒店：
+通过 Playwright + BrightData(兜底) 采集76家酒店：
   轨道A：官网BAR价格（最优可订价）
   轨道B：OTA竞对价 + 间接库存/CRM信号
 
@@ -67,11 +67,53 @@ LOG_PATH   = BASE_DIR / "collector.log"
 
 load_dotenv(ENV_FILE)
 
-SHIFTER_API_KEY = os.getenv("SHIFTER_API_KEY", "")
-SHIFTER_USER    = os.getenv("SHIFTER_USER", "")
-SHIFTER_PASS    = os.getenv("SHIFTER_PASS", "")
-SHIFTER_HOST    = os.getenv("SHIFTER_HOST", "p.shifter.io")
-SHIFTER_PORT    = os.getenv("SHIFTER_PORT", "443")
+# ── BrightData Web Unlocker API（替代 Shifter）────────────────────────────
+BRIGHTDATA_TOKEN = os.getenv("BRIGHTDATA_TOKEN", "")
+BRIGHTDATA_ZONE  = os.getenv("BRIGHTDATA_ZONE",  "insightbridge_hotels")
+BRIGHTDATA_URL   = "https://api.brightdata.com/request"
+
+# 每日请求计数器（安全保护，防止意外超额）
+_BD_DAILY_LIMIT  = 1500   # 每天最多1500次 = 约 $2.25
+_BD_COUNT_FILE   = BASE_DIR / ".bd_daily_count.json"
+
+def _bd_check_and_count() -> bool:
+    """检查今日请求是否超限，未超限则计数+1，返回True表示可以请求"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    try:
+        data = json.loads(_BD_COUNT_FILE.read_text()) if _BD_COUNT_FILE.exists() else {}
+    except Exception:
+        data = {}
+    if data.get("date") != today:
+        data = {"date": today, "count": 0}
+    if data["count"] >= _BD_DAILY_LIMIT:
+        log.warning(f"[BrightData] 今日请求已达上限 {_BD_DAILY_LIMIT}，停止以保护余额")
+        return False
+    data["count"] += 1
+    _BD_COUNT_FILE.write_text(json.dumps(data))
+    return True
+
+def _bd_fetch(url: str, timeout: int = 35) -> requests.Response | None:
+    """通过 BrightData Web Unlocker API 抓取 URL"""
+    if not _bd_check_and_count():
+        return None
+    try:
+        r = requests.post(
+            BRIGHTDATA_URL,
+            headers={"Content-Type": "application/json",
+                     "Authorization": f"Bearer {BRIGHTDATA_TOKEN}"},
+            json={"zone": BRIGHTDATA_ZONE, "url": url, "format": "raw"},
+            timeout=timeout
+        )
+        return r if r.status_code == 200 else None
+    except Exception as e:
+        log.debug(f"[BrightData] 请求失败: {e}")
+        return None
+
+# ── Shifter（已停用，保留变量避免报错）─────────────────────────────────────
+SHIFTER_USER = os.getenv("SHIFTER_USER", "")
+SHIFTER_PASS = os.getenv("SHIFTER_PASS", "")
+SHIFTER_HOST = os.getenv("SHIFTER_HOST", "p.shifter.io")
+SHIFTER_PORT = os.getenv("SHIFTER_PORT", "443")
 
 # 采集未来哪几天的入住价格
 CHECKIN_OFFSETS = [1, 7, 14, 30]   # 今天+N天
@@ -561,7 +603,7 @@ assert len(HOTELS_76) == 76, f"酒店数量异常: {len(HOTELS_76)}"
 # ══════════════════════════════════════════════════════════════════════════
 #  Shifter 代理会话
 # ══════════════════════════════════════════════════════════════════════════
-def make_session(country: str = "hk") -> requests.Session:
+def make_session() -> requests.Session:
     """构建带 Shifter 住宅代理的 requests Session（按流量扣费）"""
     sess = requests.Session()
     if SHIFTER_USER and SHIFTER_PASS:
@@ -1469,6 +1511,49 @@ def fetch_official_price(hotel: dict, checkin: str, sess: requests.Session) -> d
             except Exception as e_ota:
                 log.debug(f"  OTA fallback failed ({hotel['cn']}): {e_ota}")
 
+    # ── BrightData 兜底：Playwright/requests 全部失败时启用 ─────────────────
+    if result["official_bar"] is None:
+        bd_token = os.getenv("BRIGHTDATA_TOKEN", "2a8d98ab-51da-4f76-9454-ef7e648e6052")
+        bd_zone  = os.getenv("BRIGHTDATA_ZONE",  "insightbridge_hotels")
+        if bd_token and "your_" not in bd_token:
+            checkout = (datetime.strptime(checkin, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+            # 优先抓官网，其次抓 Booking.com 每家酒店页
+            bar_url  = hotel.get("booking_url") or hotel.get("ibe_url", "")
+            bcom_id  = hotel.get("booking_com_id", "")
+            slug     = (hotel.get("en") or hotel.get("cn", "hotel")).lower() \
+                           .replace(" ", "-").replace("'", "").replace(",", "")
+            bcom_url = (f"https://www.booking.com/hotel/mo/{slug}.html"
+                        f"?checkin={checkin}&checkout={checkout}"
+                        f"&group_adults=2&no_rooms=1&selected_currency=MOP") if bcom_id else ""
+
+            for try_url, label in [(bar_url, "bd_official"), (bcom_url, "bd_booking")]:
+                if not try_url or result["official_bar"] is not None:
+                    continue
+                try:
+                    bd_r = requests.post(
+                        "https://api.brightdata.com/request",
+                        headers={"Content-Type": "application/json",
+                                 "Authorization": f"Bearer {bd_token}"},
+                        json={"zone": bd_zone, "url": try_url, "format": "raw"},
+                        timeout=40
+                    )
+                    if bd_r.status_code == 200 and bd_r.text:
+                        raw = re.findall(r'MOP\s*([\d]{1,2},[\d]{3}|[\d]{3,5})', bd_r.text)
+                        prices = [int(p.replace(",", "")) for p in raw
+                                  if 400 <= int(p.replace(",", "")) <= 80000]
+                        if prices:
+                            result.update({
+                                "official_bar": float(min(prices)),
+                                "official_rack": float(max(prices)),
+                                "avail_status": "available",
+                                "source_ok": 1,
+                                "notes": f"{label}|{result.get('notes','')}",
+                            })
+                            log.debug(f"  BrightData {label} OK: {hotel.get('cn','')} {min(prices)} MOP")
+                            break
+                except Exception as e_bd:
+                    log.debug(f"  BrightData {label} failed ({hotel.get('cn','?')}): {e_bd}")
+
     return result
 
 
@@ -1596,6 +1681,27 @@ def fetch_ota_signals(hotel: dict, checkin: str, sess: requests.Session) -> dict
                     result["notes_ota"] += "bcom_req_fallback_ok;"
         except Exception as e2:
             result["notes_ota"] += f"bcom_req:{str(e2)[:30]};"
+
+    # ── BrightData Web Unlocker 兜底（最可靠，替代 Firecrawl/Shifter）──────
+    if result["booking_rate"] is None:
+        try:
+            slug = (hotel.get("en") or hotel.get("cn", "hotel")).lower().replace(" ", "-").replace("'","").replace(",","")
+            bd_url = (f"https://www.booking.com/hotel/mo/{slug}.html"
+                      f"?checkin={checkin}&checkout="
+                      f"{(datetime.strptime(checkin,'%Y-%m-%d')+timedelta(days=1)).strftime('%Y-%m-%d')}"
+                      f"&group_adults=2&no_rooms=1&selected_currency=MOP")
+            bd_resp = _bd_fetch(bd_url, timeout=40)
+            if bd_resp and bd_resp.text:
+                raw_prices = re.findall(r'MOP\s*([\d]{1,2},[\d]{3}|[\d]{3,5})', bd_resp.text)
+                prices = [int(p.replace(",","")) for p in raw_prices
+                          if 400 <= int(p.replace(",","")) <= 80000]
+                # 过滤掉 400/575 这类服务费，取第一个真实房价（>800）
+                real_prices = [p for p in sorted(prices) if p > 800]
+                if real_prices:
+                    result["booking_rate"] = float(real_prices[0])
+                    result["notes_ota"] += "bcom_brightdata_ok;"
+        except Exception as e_bd:
+            result["notes_ota"] += f"bcom_bd:{str(e_bd)[:30]};"
 
     return result
 
@@ -2012,7 +2118,6 @@ def fetch_google_rating(hotel: dict, conn: sqlite3.Connection,
 
     # ── 方法1：TripAdvisor 搜索结果页 JSON-LD（Booking.com Playwright已优先，这里作备用）──
     try:
-        ta_query = f'site:tripadvisor.com "{hotel["en"]}" Macau'
         ta_url = f"https://www.tripadvisor.com/Search?q={requests.utils.quote(hotel['en'] + ' Macau')}"
         r = sess.get(ta_url, timeout=15, headers={"Accept-Language": "en-US,en;q=0.9"})
         if r.status_code == 200:

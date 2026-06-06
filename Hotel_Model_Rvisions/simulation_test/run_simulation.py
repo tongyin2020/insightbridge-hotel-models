@@ -23,6 +23,7 @@ import json
 import math
 import os
 import random
+import re
 import sqlite3
 import sys
 import time
@@ -62,7 +63,7 @@ except ImportError:
     def _dsec_market_adr(month, star, conn, year=None): return 0.0
 
 try:
-    from elasticity_engine import optimize_price as _elasticity_optimize, ElasticityResult
+    from elasticity_engine import optimize_price as _elasticity_optimize
     _ELASTICITY_OK = True
 except ImportError:
     _ELASTICITY_OK = False
@@ -247,8 +248,28 @@ _last_critical_alert  = 0   # 防刷屏：CRITICAL 最多每2小时一次
 _last_metrics_push    = 0   # 防刷屏：表现快报 最多每6小时一次
 
 def _wecom_push_async(content: str):
-    """已禁用 — 推送改为每日9:00统一由 daily_report.py 发出，此处不再实时推送"""
-    return  # ← 已禁用频繁推送（2026-05-31）
+    """企业微信推送（非阻塞后台线程，不影响模拟运行）
+    策略：每日汇总 + CRITICAL 告警推送；每小时快报已禁用防刷屏。
+    重新启用：2026-06-05（修复：之前误禁导致日报停发）
+    """
+    import threading, subprocess, tempfile, os
+    def _push():
+        try:
+            wecom_script = str(Path("/Users/tongyin/Desktop/Hotel Model Rvisions/wecom_push.py"))
+            if not Path(wecom_script).exists():
+                return
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+                f.write(content)
+                tmp = f.name
+            subprocess.run(
+                ["python3", wecom_script, content],
+                capture_output=True, timeout=30
+            )
+            try: os.unlink(tmp)
+            except: pass
+        except Exception:
+            pass
+    threading.Thread(target=_push, daemon=True).start()
 
 _SHIFTER_MARKET_CACHE = Path(__file__).parent / "data" / "shifter_market_cache.json"
 _SHIFTER_MARKET_CACHE_TTL = 86400  # 24小时缓存（市场均价日更即可）
@@ -530,7 +551,7 @@ def _push_metrics_snapshot(hour: int, avg_mare: float, avg_crm: float, avg_acq: 
     _wecom_push_async(msg)
 
 def _push_daily_summary(summary: dict):
-    """每日汇总推送（含 Bright Data 市场价对比）"""
+    """每日汇总推送（含真实市场基准对比）"""
     health_icon = "✅" if summary['anomalies'] == 0 else ("⚠️" if summary['anomalies'] < 500 else "🔴")
     day = summary.get('day', 0) + 1
 
@@ -586,7 +607,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 os.environ.setdefault("MODEL_WEIGHTS_PATH", str(Path(__file__).parent / "data" / "model_weights.json"))
 
 from dotenv import load_dotenv
-load_dotenv(Path(__file__).parent.parent / ".env")   # 加载 MAKCORPS_API_KEY 等（主.env在上层目录）
+load_dotenv(Path(__file__).parent.parent / ".env")   # 加载环境变量（MakCorps已停用）（主.env在上层目录）
 
 from data_fetchers.real_data import get_all_real_signals
 from data_fetchers.scenario_engine import get_scenario, get_scenario_stats, HotelScenario, SCENARIOS
@@ -906,12 +927,16 @@ def run_3star_test(hotel: dict, signal: dict, real_data: dict,
     if _ELASTICITY_OK and result.get("recommended_price", 0) > 0:
         mkt_price = (float(sum(real_prices) / len(real_prices))
                      if real_prices else hotel["base_price"])
+        # 修复(2026-06-02 P3-A): 防止OTA淡季低价(≤500 MOP)将搜索基准拉至不合理水平
+        # DSEC后疫情3★年均ADR≈950 MOP；低季节最低合理参考 = 950×0.70 = 665，取整680
+        _mkt_floor = {3: 680, 4: 900, 5: 1400}
+        mkt_price = max(mkt_price, _mkt_floor.get(hotel.get("star", 3), 680))
         er = _elasticity_optimize(
             candidate_price = result["recommended_price"],
             market_price    = mkt_price,
             star            = hotel.get("star", 3),
             district        = hotel.get("district", "NAPE"),
-            demand_level    = signal.get("demand_state", "NORMAL"),
+            demand_level    = result.get("demand_state", signal.get("demand_state", "NORMAL")),
             season          = signal.get("season", "normal"),
             hotel_id        = hotel.get("hotel_id"),
         )
@@ -1344,7 +1369,7 @@ def main():
         _ota_ref_45 = float(real_data["upper_tier_adr_real"]) \
             if real_data.get("upper_tier_adr_real") else 2000.0
 
-        # ── 模型1：MARE房价优化（全部425家 × 14场景轮换）────────────────
+        # ── 模型1：MARE房价优化（全部76家 × 14场景轮换）────────────────
         for h_idx, hotel in enumerate(ALL_HOTELS):
             scenario = get_scenario(h_idx, hour)
             # 每小时动态计算base_price（替代固定随机数）
@@ -1380,7 +1405,7 @@ def main():
             except Exception as e:
                 _insert_err("MARE_ALL", hotel, e)
 
-        # ── 模型2：DirectorAI CRM/PSRS集成（全部425家 × 14场景）────────
+        # ── 模型2：DirectorAI CRM/PSRS集成（全部76家 × 14场景）────────
         for h_idx, hotel in enumerate(ALL_HOTELS):
             scenario = get_scenario(h_idx, hour)
             _ota_in = _ota_ref_45 if hotel["star"] >= 4 else _ota_ref_3
@@ -1416,7 +1441,7 @@ def main():
             except Exception as e:
                 _insert_err("DIRECTOR_CRM_ALL", hotel, e)
 
-        # ── 模型3：自主获客/OTA脱依赖（全部425家 × 14场景）──────────────
+        # ── 模型3：自主获客/OTA脱依赖（全部76家 × 14场景）──────────────
         for h_idx, hotel in enumerate(ALL_HOTELS):
             scenario = get_scenario(h_idx, hour)
             _ota_in = _ota_ref_45 if hotel["star"] >= 4 else _ota_ref_3
