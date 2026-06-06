@@ -47,6 +47,22 @@ if agentops_key and agentops_key != "your_agentops_key_here":
     except Exception as e:
         print(f"⚠ AgentOps 初始化失败（继续运行）: {e}")
 
+# ── HROS V6 引擎 ─────────────────────────────────────────────────────────────
+_V6_ENGINE_DIR = BASE_DIR.parent.parent / "InsightBridge_HROS_V5_Final" / "共用_HROS_V6引擎"
+_V6_OK = False
+try:
+    import sys as _sys_v6
+    if str(_V6_ENGINE_DIR) not in _sys_v6.path:
+        _sys_v6.path.insert(0, str(_V6_ENGINE_DIR))
+    from hros_v6.integration_adapter import apply_v6_to_mare_output as _v6_mare
+    from hros_v6.revenue_decision_layer_v6 import RevenueDecisionLayerV6 as _V6Layer
+    from hros_v6.crm_guardrails import CRMGuardrails as _CRMGuard
+    from hros_v6.selfacq_engine_v6 import SelfACQEngineV6 as _SelfACQV6
+    from hros_v6.revenue_attribution_engine import RevenueAttributionEngine as _AttrEngine
+    _V6_OK = True
+except Exception as _v6_err:
+    pass
+
 # ── CrewAI（可选：无OpenAI则跳过LLM推理）────────────────────────────
 USE_LLM = os.getenv("OPENAI_API_KEY", "") not in ("", "your_openai_key_here")
 USE_CREWAI = True
@@ -428,6 +444,25 @@ def main():
                     r["predicted_revpar"]    = er.predicted_revpar
                     r["expected_revenue_lift"] = f"+{er.true_lift_pct:.1f}%"
                     r["elasticity_used"]     = er.elasticity_used
+                    # ── V6 RevPAR 真实弹性优化 ──────────────────────────────
+                    if _V6_OK and r.get("recommended_price", 0) > 0:
+                        try:
+                            _v6_mkt = float(_ota_in) if _ota_in else hotel["base_price"]
+                            _v6_floor = {3: 680, 4: 900, 5: 1400}.get(hotel.get("star", 3), 680)
+                            r = _v6_mare(
+                                r,
+                                star_rating      = hotel.get("star", 3),
+                                market_price     = max(_v6_mkt, _v6_floor),
+                                base_occ         = signal.get("occupancy", 0.72),
+                                floor_price      = _v6_floor,
+                                ceiling_price    = max(r["recommended_price"] * 2.0, _v6_floor * 4),
+                                demand_state     = r.get("demand_state", signal.get("demand_state", "NORMAL")),
+                                competitor_price = None,
+                                data_quality     = 1.0 if rd.get("booking_prices_3") else 0.6,
+                            )
+                            r["hotel_profile_version"] = "V6"
+                        except Exception:
+                            r["hotel_profile_version"] = "V5_fallback"
                 anom = detect_anomalies(hotel, r, signal, "MARE_ALL")
                 rp = r.get("recommended_price", 0)
                 mare_prices.append(rp)
@@ -494,6 +529,24 @@ def main():
             )
             try:
                 r = run_45star_test(hotel, signal, real_data, scenario)
+                # ── V6 SelfACQ LTV 评估 ─────────────────────────────────
+                if _V6_OK:
+                    try:
+                        _loyalty = r.get("loyalty_tier", "none")
+                        _v6acq = _SelfACQV6().evaluate(
+                            direct_price           = r.get("direct_offer_price", r.get("recommended_price", 0)),
+                            ota_gross_price        = r.get("ota_standard_price", hotel["base_price"] * 1.15),
+                            ota_commission_rate    = 0.18,
+                            direct_conversion_prob = 0.25 if _loyalty in ("platinum","gold") else 0.15,
+                            repeat_probability     = {"platinum":0.55,"gold":0.40,"silver":0.25,"bronze":0.12,"none":0.05}.get(_loyalty, 0.05),
+                            future_margin          = hotel["base_price"] * 0.35,
+                            acquisition_cost       = 80.0 if _loyalty == "none" else 20.0,
+                        )
+                        r["selfacq_v6_direct_ltv"] = _v6acq["expected_direct_ltv"]
+                        r["selfacq_v6_advantage"]  = _v6acq["direct_advantage"]
+                        r["selfacq_v6_wins"]       = _v6acq["direct_wins"]
+                    except Exception:
+                        pass
                 anom = detect_anomalies(hotel, r, signal, "SELFACQ_ALL")
                 dp = r.get("direct_offer_price", 0)
                 if r.get("direct_wins_vs_ota"): acq_wins += 1
@@ -552,6 +605,19 @@ def main():
              round(fc_coverage * 100, 1),
              f"border:{signal['border_flow_source']} zhuhai:{signal['zhuhai_source']} pace:{signal['ota_pace_source']}")
         )
+        # ── V6 需求状态审计 + 收益归因 ──────────────────────────────────────────
+        if _V6_OK:
+            try:
+                _mare_p = [p for t,p,_ in hour_results if t=="MARE" and p]
+                if _mare_p:
+                    _audit = _V6Layer().validate_demand_state_logic(
+                        high_avg   = sum(_mare_p)/len(_mare_p),
+                        normal_avg = 901.0 * 1.05,
+                    )
+                    if _audit.get("flag"):
+                        logging.warning("[V6-AUDIT H%d] HIGH<NORMAL %.1f%%", hour, _audit["gap_pct"])
+            except Exception:
+                pass
         conn.commit()
 
         # ── 步骤6：CrewAI分析（每6小时运行一次，节省LLM配额）────────

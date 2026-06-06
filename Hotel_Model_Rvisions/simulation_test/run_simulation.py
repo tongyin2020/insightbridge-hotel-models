@@ -34,6 +34,24 @@ import logging
 
 import requests
 
+# ── HROS V6 引擎（RevPAR优化 + 学习循环 + 收益归因）────────────────────────
+_V6_ENGINE_DIR = Path(__file__).resolve().parent.parent.parent / \
+    "InsightBridge_HROS_V5_Final" / "共用_HROS_V6引擎"
+_V6_OK = False
+try:
+    import sys as _sys_v6
+    if str(_V6_ENGINE_DIR) not in _sys_v6.path:
+        _sys_v6.path.insert(0, str(_V6_ENGINE_DIR))
+    from hros_v6.integration_adapter import apply_v6_to_mare_output
+    from hros_v6.revenue_decision_layer_v6 import RevenueDecisionLayerV6 as _V6Layer
+    from hros_v6.crm_guardrails import CRMGuardrails as _CRMGuard
+    from hros_v6.selfacq_engine_v6 import SelfACQEngineV6 as _SelfACQV6
+    from hros_v6.revenue_attribution_engine import RevenueAttributionEngine as _AttrEngine
+    _V6_OK = True
+    print("✓ HROS V6 引擎已加载")
+except Exception as _v6_err:
+    print(f"⚠ HROS V6 未加载（继续V5）: {_v6_err}")
+
 # ── 真实数据库路径（hotel_real_data.db）───────────────────────────────────────
 _REAL_DB_PATH = Path("/Users/tongyin/Desktop/InsightBridge_模型测试系统/hotel_collector/hotel_real_data.db")
 
@@ -759,6 +777,13 @@ def init_db():
             anomaly_type TEXT,
             detail      TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS attribution_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_at TEXT, sim_hour INTEGER,
+            baseline_revpar REAL, optimized_revpar REAL,
+            total_lift_pct REAL, attribution_json TEXT
+        );
     """)
     conn.commit()
     return conn
@@ -948,6 +973,30 @@ def run_3star_test(hotel: dict, signal: dict, real_data: dict,
         result["elasticity_used"]     = er.elasticity_used
         result["elasticity_source"]   = er.data_source
 
+    # ── Phase 3：HROS V6 RevPAR 真实弹性优化 ────────────────────────────────
+    if _V6_OK and result.get("recommended_price", 0) > 0:
+        try:
+            _v6_mkt = (float(sum(real_prices) / len(real_prices))
+                       if real_prices else hotel["base_price"])
+            _v6_floor = {3: 680, 4: 900, 5: 1400}.get(hotel.get("star", 3), 680)
+            _v6_ceil  = max(result.get("recommended_price", 0) * 2.0, _v6_floor * 4)
+            _v6_occ   = scenario.occupancy
+            _v6_dq    = 1.0 if real_prices else 0.6
+            result = apply_v6_to_mare_output(
+                result,
+                star_rating      = hotel.get("star", 3),
+                market_price     = max(_v6_mkt, _v6_floor),
+                base_occ         = _v6_occ,
+                floor_price      = _v6_floor,
+                ceiling_price    = _v6_ceil,
+                demand_state     = result.get("demand_state", signal.get("demand_state", "NORMAL")),
+                competitor_price = competitor_price,
+                data_quality     = _v6_dq,
+            )
+            result["hotel_profile_version"] = "V6"
+        except Exception as _v6e:
+            result["hotel_profile_version"] = "V5_fallback"
+
     return result
 
 
@@ -1063,6 +1112,26 @@ def run_45star_test(hotel: dict, signal: dict, real_data: dict,
         result["revpar_lift_vs_market"]      = f"+{er.true_lift_pct:.1f}%"
         result["elasticity_used"]            = er.elasticity_used
 
+    # ── Phase 3：V6 SelfACQ LTV 评估 ─────────────────────────────────────────
+    if _V6_OK:
+        try:
+            _v6_acq_out = _SelfACQV6().evaluate(
+                direct_price          = direct_offer_price,
+                ota_gross_price       = ota_standard_price,
+                ota_commission_rate   = ota_commission_rate,
+                direct_conversion_prob= 0.25 if loyalty in ("platinum","gold") else 0.15,
+                repeat_probability    = {"platinum":0.55,"gold":0.40,"silver":0.25,"bronze":0.12,"none":0.05}.get(loyalty, 0.05),
+                future_margin         = hotel["base_price"] * 0.35,
+                acquisition_cost      = 80.0 if loyalty == "none" else 20.0,
+            )
+            result["selfacq_v6_ota_net"]       = _v6_acq_out["ota_net_revenue"]
+            result["selfacq_v6_direct_ltv"]    = _v6_acq_out["expected_direct_ltv"]
+            result["selfacq_v6_advantage"]     = _v6_acq_out["direct_advantage"]
+            result["selfacq_v6_wins"]          = _v6_acq_out["direct_wins"]
+            result["hotel_profile_version"]    = "V6"
+        except Exception:
+            result["hotel_profile_version"]    = "V5_fallback"
+
     return result
 
 
@@ -1133,6 +1202,23 @@ def run_director_crm_test(hotel: dict, signal: dict, real_data: dict,
     discount_map = {"platinum": 0.10, "gold": 0.08, "silver": 0.04, "bronze": 0.02, "none": 0.0}
     crm_adjusted_price = round(hotel["base_price"] * (1.0 - discount_map[loyalty_tier]))
 
+    # ── V6 CRM 护栏：防止折扣过深摧毁 ADR ───────────────────────────────────
+    if _V6_OK:
+        try:
+            _crm_proposed = discount_map[loyalty_tier]
+            _crm_incr = max(0.0, clv_estimate - hotel["base_price"] * 0.5)
+            _crm_guard = _CRMGuard().cap_discount(
+                star_rating       = hotel.get("star", 3),
+                proposed_discount = _crm_proposed,
+                incremental_value = _crm_incr,
+            )
+            crm_adjusted_price = round(hotel["base_price"] * (1.0 - _crm_guard["discount"]))
+            result_crm_guardrail = _crm_guard
+        except Exception:
+            result_crm_guardrail = {"discount": discount_map[loyalty_tier], "reason": "V6_error"}
+    else:
+        result_crm_guardrail = {"discount": discount_map[loyalty_tier], "reason": "V5_only"}
+
     # ── 集成健康评分（0-1）────────────────────────────────────────────
     integration_score = round(
         (0.40 if crm_matched else 0.0) +
@@ -1161,6 +1247,7 @@ def run_director_crm_test(hotel: dict, signal: dict, real_data: dict,
         "integration_score":    integration_score,
         "occupancy":            occupancy,
         "demand_high":          signal["is_holiday"] or signal["is_weekend"],
+        "crm_v6_guardrail":     result_crm_guardrail,
     }
 
     # ── Phase 2：弹性引擎验证 CRM 调价的 RevPAR 合理性 ───────────────────────
@@ -1476,6 +1563,40 @@ def main():
                 hour_results.append(("ACQ", hotel["hotel_id"], direct_price, anomalies))
             except Exception as e:  # noqa
                 _insert_err("SELFACQ_ALL", hotel, e)
+
+        # ── V6 收益归因 + 需求状态逻辑审计 ─────────────────────────────────────
+        if _V6_OK:
+            try:
+                # 收益归因
+                _dsec_base_adr = {3: 901.0, 4: 1070.0, 5: 1454.0}
+                _dsec_base_occ = 0.72
+                _mare_avg  = sum(p for t,_,p,_ in hour_results if t=="MARE" and p) / max(1, sum(1 for t,_,p,_ in hour_results if t=="MARE" and p))
+                _crm_avg   = sum(p for t,_,p,_ in hour_results if t=="CRM"  and p) / max(1, sum(1 for t,_,p,_ in hour_results if t=="CRM"  and p))
+                _acq_avg   = sum(p for t,_,p,_ in hour_results if t=="ACQ"  and p) / max(1, sum(1 for t,_,p,_ in hour_results if t=="ACQ"  and p))
+                _attr = _AttrEngine().attribute(
+                    baseline_adr             = _dsec_base_adr.get(3, 901.0),
+                    baseline_occ             = _dsec_base_occ,
+                    mare_adr                 = _mare_avg,
+                    mare_occ                 = _dsec_base_occ * 0.98,
+                    crm_incremental_value    = max(0, _crm_avg - _dsec_base_adr[3]) * _dsec_base_occ,
+                    selfacq_incremental_value= max(0, _acq_avg - _dsec_base_adr[3]) * _dsec_base_occ,
+                    rooms_available          = len(ALL_HOTELS),
+                )
+                # 需求状态审计
+                _audit = _V6Layer().validate_demand_state_logic(
+                    high_avg   = _mare_avg,
+                    normal_avg = _dsec_base_adr[3] * 1.05,
+                )
+                if _audit.get("flag"):
+                    print(f"  [V6-AUDIT] 需求状态定价异常: HIGH均价低于NORMAL基准 {_audit['gap_pct']:+.1f}%")
+                conn.execute(
+                    "INSERT OR IGNORE INTO attribution_log VALUES (NULL,?,?,?,?,?,?)",
+                    (run_at_str, hour,
+                     round(_attr["baseline_revpar"],2), round(_attr["optimized_revpar"],2),
+                     round(_attr["total_lift_pct"],2), json.dumps(_attr))
+                )
+            except Exception as _ae:
+                pass
 
         conn.commit()
 

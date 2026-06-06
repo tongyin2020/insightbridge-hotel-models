@@ -30,6 +30,22 @@ import sqlite3
 import requests
 from dotenv import load_dotenv
 
+# ── HROS V6 引擎（RevPAR优化 + CRM护栏 + SelfACQ LTV + 收益归因）────────────
+_V6_ENGINE_DIR = Path("/Users/tongyin/Desktop/InsightBridge_HROS_V5_Final/共用_HROS_V6引擎")
+_V6_OK = False
+try:
+    import sys as _sys_v6
+    if str(_V6_ENGINE_DIR) not in _sys_v6.path:
+        _sys_v6.path.insert(0, str(_V6_ENGINE_DIR))
+    from hros_v6.integration_adapter import apply_v6_to_mare_output
+    from hros_v6.revenue_decision_layer_v6 import RevenueDecisionLayerV6 as _V6Layer
+    from hros_v6.crm_guardrails import CRMGuardrails as _CRMGuard
+    from hros_v6.selfacq_engine_v6 import SelfACQEngineV6 as _SelfACQV6
+    from hros_v6.revenue_attribution_engine import RevenueAttributionEngine as _AttrEngine
+    _V6_OK = True
+except Exception as _v6_err:
+    pass  # 降级到V5，不中断运行
+
 # ── 声誉情感引擎 + DSEC市场数据（hotel_collector 同目录）
 _SENTIMENT_DIR = Path("/Users/tongyin/Desktop/InsightBridge_模型测试系统/hotel_collector")
 if str(_SENTIMENT_DIR) not in sys.path:
@@ -933,6 +949,27 @@ def main() -> int:
                     result["elasticity_used"]     = er.elasticity_used
                     result["elasticity_source"]   = er.data_source
 
+                # ── Phase 3：HROS V6 RevPAR 真实弹性优化 ──────────────────────
+                if _V6_OK and result.get("recommended_price", 0) > 0:
+                    try:
+                        _v6_floor = {3: 680, 4: 900, 5: 1400}.get(hotel["star"], 680)
+                        result = apply_v6_to_mare_output(
+                            result,
+                            star_rating      = hotel["star"],
+                            market_price     = max(float(base or 0), _v6_floor),
+                            base_occ         = sc.current_occupancy,
+                            floor_price      = _v6_floor,
+                            ceiling_price    = max(result.get("recommended_price", 0) * 2.0, _v6_floor * 4),
+                            demand_state     = ("HIGH" if sc.current_occupancy > 0.80
+                                                else "LOW" if sc.current_occupancy < 0.55
+                                                else "NORMAL"),
+                            competitor_price = float(payload.get("competitor_price") or base),
+                            data_quality     = 0.85,
+                        )
+                        result["hotel_profile_version"] = "V6"
+                    except Exception:
+                        result["hotel_profile_version"] = "V5_fallback"
+
                 write_jsonl(log_path, {
                     "timestamp_utc": ts.isoformat(),
                     "cycle": cycle + 1,
@@ -977,6 +1014,22 @@ def main() -> int:
                     global_counts["director_failures"] += 1
                 for issue in issues:
                     global_counts["issue_counts"][issue] = global_counts["issue_counts"].get(issue, 0) + 1
+                # ── V6 CRM 护栏：星级上限保护 ────────────────────────────────
+                if _V6_OK and ok and result.get("recommended_price", 0) > 0:
+                    try:
+                        _crm_raw_disc = 1.0 - (result["recommended_price"] / float(base or 1))
+                        _crm_incr = max(0.0, float(payload.get("clv_estimate", base * 2)) - base)
+                        _guard = _CRMGuard().cap_discount(
+                            star_rating       = hotel["star"],
+                            proposed_discount = max(0.0, _crm_raw_disc),
+                            incremental_value = _crm_incr,
+                        )
+                        if _guard["discount"] < _crm_raw_disc:
+                            result["recommended_price"] = round(base * (1.0 - _guard["discount"]))
+                        result["crm_v6_guardrail"] = _guard
+                        result["hotel_profile_version"] = "V6"
+                    except Exception:
+                        result["hotel_profile_version"] = "V5_fallback"
                 write_jsonl(log_path, {
                     "timestamp_utc": ts.isoformat(),
                     "cycle": cycle + 1,
@@ -1030,6 +1083,25 @@ def main() -> int:
                             issues.append("non_positive_price")
                         if "error" in result:
                             issues.append("selfacq_error")
+                        # ── V6 SelfACQ LTV 评估 ──────────────────────────────
+                        if _V6_OK:
+                            try:
+                                _loyalty = result.get("loyalty_tier", "none")
+                                _v6acq = _SelfACQV6().evaluate(
+                                    direct_price           = result.get("direct_offer_price", base),
+                                    ota_gross_price        = result.get("ota_standard_price", base * 1.15),
+                                    ota_commission_rate    = 0.18,
+                                    direct_conversion_prob = 0.25 if _loyalty in ("platinum","gold") else 0.15,
+                                    repeat_probability     = {"platinum":0.55,"gold":0.40,"silver":0.25,"bronze":0.12,"none":0.05}.get(_loyalty, 0.05),
+                                    future_margin          = base * 0.35,
+                                    acquisition_cost       = 80.0 if _loyalty == "none" else 20.0,
+                                )
+                                result["selfacq_v6_direct_ltv"]  = _v6acq["expected_direct_ltv"]
+                                result["selfacq_v6_advantage"]   = _v6acq["direct_advantage"]
+                                result["selfacq_v6_wins"]        = _v6acq["direct_wins"]
+                                result["hotel_profile_version"]  = "V6"
+                            except Exception:
+                                pass
                     except Exception as _ex:
                         ok = False
                         result = {"error": str(_ex)}
