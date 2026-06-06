@@ -29,7 +29,7 @@ from typing import Optional
 log = logging.getLogger("SENTIMENT")
 
 # ── 数据库路径
-DB_PATH = Path("/Users/tongyin/Desktop/InsightBridge_模型测试系统/hotel_collector/hotel_real_data.db")
+DB_PATH = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/hotel_collector/hotel_real_data.db")
 
 # ── 时间衰减因子 λ（月单位；λ=0.15 → 半衰期约4.6个月）
 LAMBDA_DECAY = 0.15

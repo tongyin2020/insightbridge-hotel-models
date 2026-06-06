@@ -19,8 +19,8 @@ InsightBridge 九大模型 — 自动健康检查 + 自愈脚本
   ⚠️ 需人工确认：代码导入错误 / DB 损坏 / 未知异常
                 → 写入 health_issue.flag，停止自动干预，等待人工处理
 
-日志：/Users/tongyin/Desktop/InsightBridge_模型测试系统/health_check.log
-问题标记：/Users/tongyin/Desktop/InsightBridge_模型测试系统/health_issue.flag
+日志：/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/health_check.log
+问题标记：/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/health_issue.flag
 """
 
 from __future__ import annotations
@@ -29,14 +29,14 @@ from pathlib import Path
 from datetime import datetime, timedelta
 
 # ── 路径常量 ─────────────────────────────────────────────────────────────────
-BASE        = Path("/Users/tongyin/Desktop/InsightBridge_模型测试系统")
-SIM1_DIR    = BASE / "①_Claude版_MARE定价+CRM+获客"
+BASE        = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026")
+SIM1_DIR    = BASE / "system2_claude_simulation"
 SIM1_SCRIPT = SIM1_DIR / "run_simulation.py"
 SIM1_PID    = SIM1_DIR / "simulation.pid"
-SIM1_DB     = Path("/Users/tongyin/Desktop/Hotel Model Rvisions/simulation_test/results.db")
-SIM1_LOG    = SIM1_DIR / "nohup.out"
+SIM1_DB     = SIM1_DIR / "results.db"
+SIM1_LOG    = SIM1_DIR / "simulation_output.log"
 
-SIM2_SCRIPT = Path("/Users/tongyin/hotel_model_staging/run_21d_harness.py")
+SIM2_SCRIPT = BASE / "system1_chatgpt_harness/run_21d_harness.py"
 REAL_DB     = BASE / "hotel_collector/hotel_real_data.db"
 WATCHDOG_PY = BASE / "watchdog_all.py"
 WATCHDOG_PID= BASE / "watchdog_all.pid"

@@ -35,8 +35,7 @@ import logging
 import requests
 
 # ── HROS V6 引擎（RevPAR优化 + 学习循环 + 收益归因）────────────────────────
-_V6_ENGINE_DIR = Path(__file__).resolve().parent.parent.parent / \
-    "InsightBridge_HROS_V5_Final" / "共用_HROS_V6引擎"
+_V6_ENGINE_DIR = Path(__file__).resolve().parent.parent / "共用_HROS_V6引擎"
 _V6_OK = False
 try:
     import sys as _sys_v6
@@ -55,7 +54,7 @@ except Exception as _v6_err:
     print(f"⚠ HROS V6 未加载（继续V5）: {_v6_err}")
 
 # ── 真实数据库路径（hotel_real_data.db）───────────────────────────────────────
-_REAL_DB_PATH = Path("/Users/tongyin/Desktop/InsightBridge_模型测试系统/hotel_collector/hotel_real_data.db")
+_REAL_DB_PATH = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/hotel_collector/hotel_real_data.db")
 
 # ── 双层OTA折算系数（OTA价 × 此系数 ≈ 官网BAR）
 _OTA_TO_BAR_MASS    = 0.85   # 3-4★ 大众市场
@@ -64,7 +63,7 @@ _BAR_WEIGHT = {3: 0.55, 4: 0.55, 5: 0.70}   # 历史参考权重
 _OTA_WEIGHT = {3: 0.45, 4: 0.45, 5: 0.30}   # 实时OTA权重
 
 # ── 声誉情感引擎 + DSEC数据（hotel_collector目录）────────────────────────────
-_COLLECTOR_DIR = Path("/Users/tongyin/Desktop/InsightBridge_模型测试系统/hotel_collector")
+_COLLECTOR_DIR = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/hotel_collector")
 if str(_COLLECTOR_DIR) not in sys.path:
     sys.path.insert(0, str(_COLLECTOR_DIR))
 
@@ -275,7 +274,7 @@ def _wecom_push_async(content: str):
     import threading, subprocess, tempfile, os
     def _push():
         try:
-            wecom_script = str(Path("/Users/tongyin/Desktop/Hotel Model Rvisions/wecom_push.py"))
+            wecom_script = str(Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/Hotel_Model_Rvisions/wecom_push.py"))
             if not Path(wecom_script).exists():
                 return
             with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:

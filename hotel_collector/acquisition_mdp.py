@@ -42,7 +42,7 @@ from typing import Optional
 
 log = logging.getLogger("ACQUISITION_MDP")
 
-DB_PATH = Path("/Users/tongyin/Desktop/InsightBridge_模型测试系统/hotel_collector/hotel_real_data.db")
+DB_PATH = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/hotel_collector/hotel_real_data.db")
 
 # ── 奖励函数超参数 ─────────────────────────────────────────────────────────
 KAPPA = 0.30        # 口碑反噬风险惩罚系数（越高越保守）

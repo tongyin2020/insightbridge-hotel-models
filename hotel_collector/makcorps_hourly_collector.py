@@ -51,7 +51,7 @@ except Exception as _e:
 
 # ── 路径 & 配置 ────────────────────────────────────────────────────────────
 BASE_DIR  = Path(__file__).parent
-ENV_FILE  = Path("/Users/tongyin/Desktop/Hotel Model Rvisions/.env")
+ENV_FILE  = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/.env")
 DB_PATH   = BASE_DIR / "hotel_real_data.db"
 LOG_PATH  = BASE_DIR / "makcorps_hourly.log"
 

@@ -8,7 +8,7 @@ InsightBridge — 三套系统统一守护进程 watchdog_all.py
   nohup python3 watchdog_all.py > watchdog_all.log 2>&1 &
 
 停止：
-  kill $(cat /Users/tongyin/Desktop/InsightBridge_模型测试系统/watchdog_all.pid)
+  kill $(cat /Users/tongyin/Desktop/InsightBridge_九大模型_v2026/watchdog_all.pid)
 """
 
 from __future__ import annotations
@@ -17,37 +17,37 @@ from pathlib import Path
 from datetime import datetime
 
 # ── 路径 ──────────────────────────────────────────────────────────────────
-DESKTOP     = Path("/Users/tongyin/Desktop/InsightBridge_模型测试系统")
-WECOM_PY    = Path("/Users/tongyin/Desktop/Hotel Model Rvisions/wecom_push.py")
+DESKTOP     = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026")
+WECOM_PY    = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/Hotel_Model_Rvisions/wecom_push.py")
 WATCHDOG_PID = DESKTOP / "watchdog_all.pid"
 
 # ── 被守护的三套系统定义 ──────────────────────────────────────────────────
 SYSTEMS = {
     "Claude版": {
-        "script":   "/Users/tongyin/Desktop/Hotel Model Rvisions/simulation_test/run_simulation.py",
-        "cwd":      "/Users/tongyin/Desktop/Hotel Model Rvisions/simulation_test",
-        "pid_file": "/Users/tongyin/Desktop/Hotel Model Rvisions/simulation_test/simulation.pid",
-        "db":       "/Users/tongyin/Desktop/Hotel Model Rvisions/simulation_test/results.db",
+        "script":   "/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/system2_claude_simulation/run_simulation.py",
+        "cwd":      "/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/system2_claude_simulation",
+        "pid_file": "/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/system2_claude_simulation/simulation.pid",
+        "db":       "/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/system2_claude_simulation/results.db",
         "db_table": "hourly_runs",
-        "log_out":  "/Users/tongyin/Desktop/Hotel Model Rvisions/simulation_test/simulation_output.log",
+        "log_out":  "/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/system2_claude_simulation/simulation_output.log",
         "total_h":  504,
     },
     "CrewAI版": {
-        "script":   "/Users/tongyin/Desktop/Hotel Model Rvisions/crewai_simulation/main.py",
-        "cwd":      "/Users/tongyin/Desktop/Hotel Model Rvisions/crewai_simulation",
-        "pid_file": "/Users/tongyin/Desktop/Hotel Model Rvisions/crewai_simulation/crewai.pid",
-        "db":       "/Users/tongyin/Desktop/Hotel Model Rvisions/crewai_simulation/crewai_results.db",
+        "script":   "/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/system3_crewai/main.py",
+        "cwd":      "/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/system3_crewai",
+        "pid_file": "/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/system3_crewai/crewai.pid",
+        "db":       "/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/system3_crewai/crewai_results.db",
         "db_table": "hourly_runs",
-        "log_out":  "/Users/tongyin/Desktop/Hotel Model Rvisions/crewai_simulation/crewai_sim.log",
+        "log_out":  "/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/system3_crewai/crewai_sim.log",
         "total_h":  504,
     },
     "ChatGPT版": {
-        "script":   "/Users/tongyin/hotel_model_staging/run_21d_harness.py",
-        "cwd":      "/Users/tongyin/hotel_model_staging",
+        "script":   "/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/system1_chatgpt_harness/run_21d_harness.py",
+        "cwd":      "/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/system1_chatgpt_harness",
         "pid_file": None,          # launchd 管理，通过进程名检测
         "db":       None,          # 输出为 jsonl，检测最新文件时间
-        "jsonl_dir":"/Users/tongyin/hotel_model_staging/hotel_model_staging_output",
-        "log_out":  "/Users/tongyin/hotel_model_staging/logs/launchd.out.log",
+        "jsonl_dir":"/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/hotel_model_staging_output",
+        "log_out":  "/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/system1_chatgpt_harness/logs/launchd.out.log",
         "total_h":  504,
     },
 }
@@ -151,7 +151,7 @@ def _restart(name: str, cfg: dict, reason: str):
     if name == "ChatGPT版":
         # ChatGPT版由 launchd + run_harness.sh 管理，直接调用 shell
         proc = subprocess.Popen(
-            ["/bin/bash", "/Users/tongyin/hotel_model_staging/run_harness.sh"],
+            ["/bin/bash", "/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/system1_chatgpt_harness/run_harness.sh"],
             start_new_session=True,
         )
         new_pid = proc.pid

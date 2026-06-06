@@ -10,7 +10,7 @@
   ④ 结果存入 crewai_results.db，与 results.db 可直接对比
 
 运行方法：
-    cd "/Users/tongyin/Desktop/Hotel Model Rvisions/crewai_simulation"
+    cd "/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/system3_crewai"
     pip install -r requirements.txt
     python3 main.py
 """
@@ -23,7 +23,7 @@ from pathlib import Path
 
 # ── 环境配置 ──────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent
-MODEL_DIR = BASE_DIR.parent  # Hotel Model Rvisions/
+MODEL_DIR = BASE_DIR.parent  # InsightBridge_九大模型_v2026/
 
 sys.path.insert(0, str(MODEL_DIR))
 sys.path.insert(0, str(BASE_DIR))
@@ -32,8 +32,8 @@ from dotenv import load_dotenv
 load_dotenv(BASE_DIR / ".env", override=True)   # override=True 确保.env优先于系统环境变量
 
 os.environ.setdefault("MODEL_WEIGHTS_PATH",
-                      str(MODEL_DIR / "simulation_test" / "data" / "model_weights.json"))
-sys.path.insert(0, str(MODEL_DIR / "simulation_test"))
+                      str(MODEL_DIR / "system2_claude_simulation" / "data" / "model_weights.json"))
+sys.path.insert(0, str(MODEL_DIR / "system2_claude_simulation"))
 
 # ── AgentOps 初始化（监控开关）───────────────────────────────────────
 USE_AGENTOPS = False
@@ -48,7 +48,7 @@ if agentops_key and agentops_key != "your_agentops_key_here":
         print(f"⚠ AgentOps 初始化失败（继续运行）: {e}")
 
 # ── HROS V6 引擎 ─────────────────────────────────────────────────────────────
-_V6_ENGINE_DIR = BASE_DIR.parent.parent / "InsightBridge_HROS_V5_Final" / "共用_HROS_V6引擎"
+_V6_ENGINE_DIR = BASE_DIR.parent / "共用_HROS_V6引擎"
 _V6_OK = False
 try:
     import sys as _sys_v6
@@ -93,7 +93,7 @@ from run_simulation import (
 )
 
 # ── Phase 2 弹性引擎 ──────────────────────────────────────────────────
-_COLLECTOR_DIR_CREWAI = "/Users/tongyin/Desktop/InsightBridge_模型测试系统/hotel_collector"
+_COLLECTOR_DIR_CREWAI = "/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/hotel_collector"
 if _COLLECTOR_DIR_CREWAI not in sys.path:
     sys.path.insert(0, _COLLECTOR_DIR_CREWAI)
 try:
@@ -111,7 +111,7 @@ except ImportError:
         )
 
 # ── 切换为澳门旅游局官方76家真实酒店 ─────────────────────────────────────────
-_SIM_DIR_MAIN = "/Users/tongyin/Desktop/Hotel Model Rvisions/simulation_test"
+_SIM_DIR_MAIN = "/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/system2_claude_simulation"
 if _SIM_DIR_MAIN not in sys.path:
     sys.path.insert(0, _SIM_DIR_MAIN)
 try:
@@ -263,7 +263,7 @@ def get_market_signal(sim_hour: int, real_data: dict, fc_data: dict) -> dict:
     dsec_market_occ = 0.0
     try:
         import sqlite3 as _sq
-        _RDBP = Path("/Users/tongyin/Desktop/InsightBridge_模型测试系统/hotel_collector/hotel_real_data.db")
+        _RDBP = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/hotel_collector/hotel_real_data.db")
         if _RDBP.exists():
             _dc = _sq.connect(str(_RDBP), timeout=5)
             from dsec_loader import get_dsec_demand_signal as _dsec_sig

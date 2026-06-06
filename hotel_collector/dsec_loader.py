@@ -23,7 +23,7 @@ import math
 from pathlib import Path
 from typing import Optional
 
-DB_PATH = Path("/Users/tongyin/Desktop/InsightBridge_模型测试系统/hotel_collector/hotel_real_data.db")
+DB_PATH = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/hotel_collector/hotel_real_data.db")
 
 # ══════════════════════════════════════════════════════════════════════════
 #  历史数据（2020-2025，来源：澳门旅游局月报 PDF 提取）

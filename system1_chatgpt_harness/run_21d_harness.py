@@ -33,7 +33,7 @@ from dotenv import load_dotenv
 
 # ── 声誉情感引擎 + DSEC市场数据（hotel_collector 同目录）
 import sys as _sys
-_SENTIMENT_DIR = Path("/Users/tongyin/Desktop/InsightBridge_模型测试系统/hotel_collector")
+_SENTIMENT_DIR = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/hotel_collector")
 if str(_SENTIMENT_DIR) not in _sys.path:
     _sys.path.insert(0, str(_SENTIMENT_DIR))
 try:
@@ -74,7 +74,7 @@ except ImportError:
         )
 
 # ── 自主获客模型（从 simulation_test 复用）─────────────────────────────────
-_SIM_DIR = Path("/Users/tongyin/Desktop/Hotel Model Rvisions/simulation_test")
+_SIM_DIR = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/system2_claude_simulation")
 if str(_SIM_DIR) not in _sys.path:
     _sys.path.insert(0, str(_SIM_DIR))
 try:
@@ -95,7 +95,7 @@ except ImportError as _e:
 UTC = timezone.utc
 
 # ── 真实数据库路径（hotel_data_collector 写入的数据）
-REAL_DB_PATH = Path("/Users/tongyin/Desktop/InsightBridge_模型测试系统/hotel_collector/hotel_real_data.db")
+REAL_DB_PATH = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/hotel_collector/hotel_real_data.db")
 
 # ── 双层OTA折算系数（OTA价 × 此系数 ≈ 官网BAR）
 # 3-4★ 大众市场：OTA溢价约18%，折算系数0.85
@@ -667,7 +667,10 @@ def run_python_snippet(cwd: Path, pythonpath: Path, script: str, payload: dict[s
             "stdout": proc.stdout[-2000:],
         }
     try:
-        return True, json.loads(proc.stdout)
+        parsed = json.loads(proc.stdout)
+        if parsed is None:
+            return False, {"error": "engine returned null", "stdout": proc.stdout[-2000:]}
+        return True, parsed
     except json.JSONDecodeError:
         return False, {"stdout": proc.stdout[-4000:], "stderr": proc.stderr[-2000:]}
 

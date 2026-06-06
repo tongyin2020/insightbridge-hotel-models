@@ -6,7 +6,7 @@ InsightBridge AI 模型每日报告
 通过企业微信机器人推送一次。
 
 手动测试：
-  python3 /Users/tongyin/Desktop/InsightBridge_模型测试系统/daily_report.py
+  python3 /Users/tongyin/Desktop/InsightBridge_九大模型_v2026/daily_report.py
 """
 
 from __future__ import annotations
@@ -15,11 +15,11 @@ from pathlib import Path
 from datetime import datetime
 
 # ── 路径配置 ──────────────────────────────────────────────────────────────
-WECOM_PY     = Path("/Users/tongyin/Desktop/Hotel Model Rvisions/wecom_push.py")
-SYS2_DB      = Path("/Users/tongyin/Desktop/Hotel Model Rvisions/simulation_test/results.db")
-SYS3_DB      = Path("/Users/tongyin/Desktop/Hotel Model Rvisions/crewai_simulation/crewai_results.db")
-SYS1_OUTDIR  = Path("/Users/tongyin/hotel_model_staging/hotel_model_staging_output")
-COLLECTOR_DB = Path("/Users/tongyin/Desktop/InsightBridge_模型测试系统/hotel_collector/hotel_real_data.db")
+WECOM_PY     = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/Hotel_Model_Rvisions/wecom_push.py")
+SYS2_DB      = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/system2_claude_simulation/results.db")
+SYS3_DB      = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/system3_crewai/crewai_results.db")
+SYS1_OUTDIR  = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/hotel_model_staging_output")
+COLLECTOR_DB = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/hotel_collector/hotel_real_data.db")
 
 TODAY = datetime.now().strftime("%Y-%m-%d")
 NOW   = datetime.now().strftime("%Y-%m-%d %H:%M")
