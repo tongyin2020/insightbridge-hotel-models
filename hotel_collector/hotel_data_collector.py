@@ -1037,11 +1037,11 @@ def _fetch_mgm_price(hotel: dict, checkin: str, checkout: str, ctx) -> dict | No
             f"?locale=en-US&template={template}&hotel={hotel_code}"
             f"&checkIn={checkin}&checkOut={checkout}"
         )
-        page.goto(mgm_url, timeout=28000, wait_until="domcontentloaded")
+        page.goto(mgm_url, timeout=8000, wait_until="domcontentloaded")
         try:
-            page.wait_for_load_state("networkidle", timeout=12000)
+            page.wait_for_load_state("networkidle", timeout=5000)
         except PwTimeout:
-            page.wait_for_timeout(5000)
+            page.wait_for_timeout(1000)
 
         page.close()
 
@@ -1330,11 +1330,11 @@ def fetch_official_price(hotel: dict, checkin: str, sess: requests.Session) -> d
                 sep = "&" if "?" in url else "?"
                 full_url = f"{url}{sep}checkin={checkin}&checkout={checkout}&adults=2&rooms=1"
 
-                page.goto(full_url, timeout=28000, wait_until="domcontentloaded")
+                page.goto(full_url, timeout=8000, wait_until="domcontentloaded")
                 try:
-                    page.wait_for_load_state("networkidle", timeout=10000)
+                    page.wait_for_load_state("networkidle", timeout=5000)
                 except PwTimeout:
-                    page.wait_for_timeout(5000)
+                    page.wait_for_timeout(1000)
 
                 html = page.content()
                 page_prices = _extract_prices(html)
@@ -1423,13 +1423,13 @@ def fetch_official_price(hotel: dict, checkin: str, sess: requests.Session) -> d
                         pass
 
                 page2.on("response", on_synxis_response)
-                page2.goto(ibe_direct_url, timeout=30000, wait_until="domcontentloaded")
+                page2.goto(ibe_direct_url, timeout=8000, wait_until="domcontentloaded")
                 try:
-                    page2.wait_for_load_state("networkidle", timeout=15000)
+                    page2.wait_for_load_state("networkidle", timeout=5000)
                 except PwTimeout:
-                    page2.wait_for_timeout(8000)
+                    page2.wait_for_timeout(1000)
                 # 额外等待SynXis价格异步加载
-                page2.wait_for_timeout(3000)
+                page2.wait_for_timeout(1000)
 
                 ibe_html = page2.content()
                 _tier_floor = {"5_deluxe": 800, "5_star": 600, "4_star": 500, "3_star": 280}
@@ -1586,8 +1586,8 @@ def fetch_ota_signals(hotel: dict, checkin: str, sess: requests.Session) -> dict
         with sync_playwright() as pw:
             browser, ctx = _pw_launch_with_shifter(pw, locale="zh-HK")
             page = ctx.new_page()
-            page.goto(url, timeout=28000, wait_until="domcontentloaded")
-            page.wait_for_timeout(3500)
+            page.goto(url, timeout=8000, wait_until="domcontentloaded")
+            page.wait_for_timeout(2000)
             content = page.content()
             ctx.close(); browser.close()
 
@@ -1764,8 +1764,8 @@ def fetch_inventory_signals(hotel: dict, checkin: str,
             # 使用 Shifter 住宅代理（绕过 Booking.com 反爬）
             browser, ctx = _pw_launch_with_shifter(pw, locale="zh-HK")
             page = ctx.new_page()
-            page.goto(url, timeout=28000, wait_until="domcontentloaded")
-            page.wait_for_timeout(3500)
+            page.goto(url, timeout=8000, wait_until="domcontentloaded")
+            page.wait_for_timeout(2000)
             content = page.content()
             ctx.close(); browser.close()
 
@@ -1822,8 +1822,8 @@ def fetch_agoda_ota(hotel: dict, checkin: str, sess: requests.Session) -> dict:
         with sync_playwright() as pw:
             browser, ctx = _pw_launch_with_shifter(pw, locale="zh-HK")
             page = ctx.new_page()
-            page.goto(url, timeout=30000, wait_until="domcontentloaded")
-            page.wait_for_timeout(5000)   # Agoda 价格延迟渲染，多等 2s
+            page.goto(url, timeout=8000, wait_until="domcontentloaded")
+            page.wait_for_timeout(2000)   # Agoda 价格延迟渲染
 
             content = page.content()
             ctx.close(); browser.close()
@@ -1915,8 +1915,8 @@ def fetch_tripdotcom_inventory(hotel: dict, checkin: str,
         with sync_playwright() as pw:
             browser, ctx = _pw_launch_with_shifter(pw, locale="zh-HK")
             page = ctx.new_page()
-            page.goto(search_url, timeout=28000, wait_until="domcontentloaded")
-            page.wait_for_timeout(4000)
+            page.goto(search_url, timeout=8000, wait_until="domcontentloaded")
+            page.wait_for_timeout(2000)
             content = page.content()
             ctx.close(); browser.close()
 
@@ -2071,8 +2071,8 @@ def fetch_google_rating(hotel: dict, conn: sqlite3.Connection,
                 # 升级：使用 Shifter 代理（绕过 Booking.com bot 防护）
                 browser, ctx = _pw_launch_with_shifter(pw, locale="zh-HK")
                 page = ctx.new_page()
-                page.goto(url, timeout=28000, wait_until="domcontentloaded")
-                page.wait_for_timeout(3000)
+                page.goto(url, timeout=8000, wait_until="domcontentloaded")
+                page.wait_for_timeout(2000)
                 content = page.content()
                 ctx.close()
                 browser.close()
