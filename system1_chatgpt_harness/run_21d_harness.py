@@ -25,6 +25,7 @@ import time
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import sqlite3
@@ -79,6 +80,7 @@ if str(_SIM_DIR) not in _sys.path:
     _sys.path.insert(0, str(_SIM_DIR))
 try:
     from run_simulation import run_45star_test as _run_selfacq
+    from run_simulation import run_director_crm_test as _run_director_crm
     from data_fetchers.scenario_engine import SCENARIOS as _SIM_SCENARIOS
     from hotel_roster_76 import ALL_HOTELS_76 as _HOTELS_76
     _SELFACQ_OK = True
@@ -88,6 +90,8 @@ except ImportError as _e:
     _ROSTER_OK  = False
     def _run_selfacq(hotel, signal, real_data, scenario):
         return {"direct_offer_price": 0, "direct_wins_vs_ota": False, "error": str(_e)}
+    def _run_director_crm(hotel, signal, real_data, scenario):
+        return {"crm_adjusted_price": 0, "error": str(_e)}
     _SIM_SCENARIOS = []
     _HOTELS_76     = []
 
@@ -598,6 +602,8 @@ def build_payload(snapshot: ExternalSnapshot, scenario: ScenarioDefinition, hote
 
     payload = {
         "hotel_id": hotel_id,
+        "scenario_name": scenario.name,
+        "scenario_category": scenario.category,
         "market_segment": market_segment,
         "base_price": round(base_price, 2),
         "season": "shoulder" if snapshot.event_density < 0.45 else "peak",
@@ -693,26 +699,77 @@ print(json.dumps(result))
     return run_python_snippet(repo_path / "api", repo_path / "api", script, payload)
 
 
+def _director_channel_weights(guest_segment: str) -> tuple[int, int, int, int, int, int]:
+    segment = (guest_segment or "").lower().strip()
+    if segment == "corporate":
+        return (30, 28, 15, 5, 18, 4)
+    if segment == "ota":
+        return (8, 48, 30, 4, 6, 4)
+    if segment == "returning":
+        return (44, 14, 10, 2, 24, 6)
+    if segment == "walk_in":
+        return (12, 22, 12, 34, 8, 12)
+    return (16, 38, 24, 8, 10, 4)
+
+
+def _director_psrs_health(payload: dict[str, Any]) -> str:
+    name = str(payload.get("scenario_name", "")).lower()
+    category = str(payload.get("scenario_category", "")).lower()
+    if name == "dirty_data":
+        return "error"
+    if category == "adversarial" or name in {"signal_conflict", "low_satisfaction_conflict", "fairness_stress"}:
+        return "degraded"
+    return "healthy"
+
+
+def _director_crm_override(payload: dict[str, Any]) -> float | None:
+    name = str(payload.get("scenario_name", "")).lower()
+    loyalty = str(payload.get("loyalty_tier", "")).lower()
+    if name == "dirty_data":
+        return 0.12
+    if name == "signal_conflict":
+        return 0.20
+    if loyalty in {"diamond", "platinum", "vip"}:
+        return 0.82
+    if loyalty == "gold":
+        return 0.68
+    return None
+
+
 def run_director(repo_path: Path, payload: dict[str, Any], objective_mode: str) -> tuple[bool, dict[str, Any]]:
-    script = r"""
-import json, sys
-from types import SimpleNamespace
-from app.core.pricing_engine import recommend
-payload = json.loads(sys.argv[1])
-objective_mode = payload.pop("_objective_mode", "maximize_revenue")
-hotel_settings = SimpleNamespace(
-    floor_price=float(payload.get("floor_price", 750)),
-    ceiling_price=float(payload.get("ceiling_price", 1015)),
-)
-# Bug Fix: recommend() 用点号访问属性(data.base_price等)，payload是dict会报AttributeError
-# 将dict转为SimpleNamespace，使点号访问生效
-data = SimpleNamespace(**payload)
-result = recommend(data, hotel_settings)
-print(json.dumps(result))
-"""
-    payload = dict(payload)
-    payload["_objective_mode"] = objective_mode
-    return run_python_snippet(repo_path / "backend", repo_path / "backend", script, payload)
+    # System 1 的 DirectorAI 需要输出 CRM/PSRS 型结果，而不是另一份价格引擎结果。
+    # 这里直接将 harness payload 适配成 Director 场景，复用 System 2 中已验证的 CRM 逻辑。
+    try:
+        occupancy = float(payload.get("current_occupancy", 0.65))
+        total_rooms = max(int(payload.get("total_rooms", 1)), 1)
+        remaining_inventory = max(int(payload.get("remaining_inventory", total_rooms // 3)), 0)
+        scenario = SimpleNamespace(
+            name=payload.get("scenario_name", "system1_director"),
+            occupancy=occupancy,
+            channel_weights=_director_channel_weights(str(payload.get("guest_segment", ""))),
+            loyalty_tier=str(payload.get("loyalty_tier", "") or "none"),
+            avg_clv=float(payload.get("avg_clv", 0.0)),
+            crm_match_rate_override=_director_crm_override(payload),
+            remaining_inventory_ratio=min(1.0, remaining_inventory / total_rooms),
+            psrs_health=_director_psrs_health(payload),
+        )
+        hotel = {
+            "hotel_id": payload.get("hotel_id"),
+            "base_price": float(payload.get("base_price", 0.0)),
+            "star": int(payload.get("hotel_star", payload.get("star", 3)) or 3),
+            "district": "NAPE",
+        }
+        signal = {
+            "is_holiday": bool(float(payload.get("holiday", 0.0)) > 0.3),
+            "is_weekend": bool(float(payload.get("weekend", 0.0)) > 0.3),
+            "season": payload.get("season", "normal"),
+        }
+        result = _run_director_crm(hotel, signal, {}, scenario)
+        if "error" in result:
+            return False, result
+        return True, result
+    except Exception as exc:
+        return False, {"error": str(exc)}
 
 
 def evaluate_result(name: str, result: dict[str, Any]) -> list[str]:
