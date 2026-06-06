@@ -1,0 +1,41 @@
+# ── Python 编译缓存 ──
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# ── 运行时文件（PID / 锁 / WAL）──
+*.pid
+*.lock
+*.db-shm
+*.db-wal
+
+# ── 数据库（大型二进制，不追踪）──
+*.db
+
+# ── 日志文件 ──
+*.log
+*.err
+*.out
+
+# ── 环境变量（含密钥，不提交）──
+.env
+.env.*
+
+# ── macOS 系统文件 ──
+.DS_Store
+desktop.ini
+
+# ── 运行输出（JSONL / JSON 结果，体积大）──
+hotel_model_staging_output/
+db_archives/
+
+# ── 临时文件 ──
+*.tmp
+*.bak
+agentops.log
+
+# ── 敏感配置 ──
+service_account.json
+wecom_chats.json

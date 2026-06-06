@@ -1,0 +1,20 @@
+{
+  "season_multipliers": {
+    "off_peak": 0.92,
+    "shoulder": 1.0,
+    "peak": 1.08,
+    "super_peak": 1.15
+  },
+  "demand_weights": {
+    "holiday": 0.16,
+    "event_ticket_sales": 0.1,
+    "weekend": 0.14,
+    "border_flow": 0.18,
+    "visitors_stats": 0.08,
+    "flight_ferry": 0.05,
+    "zhuhai_saturation": 0.12,
+    "ota_booking_pace": 0.07,
+    "weather": 0.03,
+    "dsec_market_occ": 0.07
+  }
+}
