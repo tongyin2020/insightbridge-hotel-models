@@ -92,7 +92,7 @@ def build_tasks(agents: dict, hour: int, signal_context: str, fc_context: str) -
         """,
         expected_output=(
             "自主获客分析：直销胜率按场景类别分解、价格战场景下的收益保护分析、"
-            "路凼vs新口岸的区域差异、与MakCorps数据接入后的改进预测。"
+            "路凼vs新口岸的区域差异、与真实市场数据接入后的改进预测。"
         ),
         agent=agents["selfacq"],
         context=[t1_data],

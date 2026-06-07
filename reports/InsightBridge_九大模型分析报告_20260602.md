@@ -195,7 +195,6 @@ mkt_price = max(mkt_price, _mkt_floor.get(hotel.get("star", 3), 680))
 | **P3-A** | **480 MOP回归（OTA低价拉低弹性搜索基准）** | ✅ **已修复** | **H322+最低850 MOP ✅** |
 | DSEC-1 | 弹性引擎OTA混合价基准 | ✅ 已修复 | 切换至星级专属ADR ✅ |
 | DSEC-2 | build_payload()OTA参考混用 | ✅ 已修复 | 按hotel["star"]查DSEC ADR ✅ |
-| S-4 | MakCorps过期API数据混入 | ✅ 已修复 | makcorps_disabled排除 ✅ |
 | S-5 | dsec_market_occ未加入权重 | ✅ 已修复 | 权重0.07已加入 ✅ |
 | S-3 | booking_prices_23键名错误 | ✅ 已修复 | 3★OTA参考从1000→实际值 ✅ |
 

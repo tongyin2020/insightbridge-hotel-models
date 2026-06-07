@@ -59,12 +59,12 @@ def _build() -> tuple[list[dict], list[dict]]:
         en           : str   — 英文名称
         star         : int   — 数字星级 3/4/5
         tier         : str   — 原始档次 5_deluxe/5_star/4_star/3_star
-        base_price   : float — 默认底价（运行时由DSEC+MakCorps覆盖）
+        base_price   : float — 默认底价（运行时由DSEC+真实BAR/OTA覆盖）
         total_rooms  : int   — 真实客房数
         district     : str   — 区域代码
         area         : str   — 中文区域名
         market_segment: str | None — macau_luxury_direct(4-5★) / None(3★)
-        booking_com_id: str  — Booking.com ID（供MakCorps采集）
+        booking_com_id: str  — Booking.com ID（供 OTA 采集）
     """
     hotels_3: list[dict] = []
     hotels_45: list[dict] = []

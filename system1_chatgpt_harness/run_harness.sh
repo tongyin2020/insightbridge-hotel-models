@@ -3,13 +3,14 @@
 # 单一主目录：InsightBridge_九大模型_v2026/system1_chatgpt_harness
 
 SCRIPT_DIR="/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/system1_chatgpt_harness"
-PYTHON="/usr/bin/python3"
+PYTHON="${PYTHON:-/opt/anaconda3/bin/python3}"
 
 cd "$SCRIPT_DIR" || exit 1
 
-# 加载环境变量
-if [ -f "$SCRIPT_DIR/.env" ]; then
-    export $(grep -v '^#' "$SCRIPT_DIR/.env" | xargs)
+# run_21d_harness.py 会自己通过 python-dotenv 读取 .env。
+# 这里不在 shell 层解析，避免带空格的值（例如酒店名）破坏启动。
+if [ ! -x "$PYTHON" ]; then
+    PYTHON="$(command -v python3)"
 fi
 
 # 确保 output 目录存在

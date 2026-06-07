@@ -172,7 +172,6 @@
 | 5 | IndentationError（line 912） | py_compile+重启验证 | ✅ 无重现 |
 | 6 | dsec_market_occ缺失权重 | 检查model_weights.json | ✅ 已加入 |
 | 7 | booking_prices_23键名错误 | 3★OTA参考从1000→实际值 | ✅ 已修复 |
-| 8 | MakCorps失效数据混入 | 屏蔽makcorps_disabled来源 | ✅ 已屏蔽 |
 
 ---
 

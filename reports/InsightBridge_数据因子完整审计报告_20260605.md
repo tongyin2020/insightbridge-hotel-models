@@ -29,7 +29,6 @@
 | 15 | 口岸过境客流 | `border_flow` | Firecrawl搜索/TDM新闻（系统三已实现） | ✅ **系统三真实数据** / ⚠️ 系统一/二场景模拟 | 全9个 |
 | 16 | OTA预订节奏 | `ota_booking_pace` | Firecrawl→Booking.com urgency（系统三已实现） | ✅ **系统三真实数据** / ⚠️ 系统一/二场景模拟 | 全9个 |
 | 17 | IR赛事日历 | `ir_signal` | 04_IR_Event_Calendar.py | ⚠️ **运行状态未知** | 全9个 |
-| 18 | MakCorps竞对价 | `ota_prices` | MakCorps API | ❌ **永久停用** | — |
 | 19 | BrightData代理 | — | BrightData API | 🔴 **有余额但认证失败** | 待配置 |
 | 20 | hotel_data_collector | — | 自动采集脚本 | 🔴 **launchd退出码19968** | 影响9/10/11/12/13 |
 
@@ -81,7 +80,7 @@
 **解决方案B**：hotel_data_collector 通过 Playwright + Shifter（需修复collector）
 
 #### 问题3：OTA预订节奏 `ota_booking_pace`（因子#16）
-**现状**：MakCorps永久停用，当前用场景模拟替代  
+**现状**：当前以场景模拟替代该类外部竞对价信号  
 **解决方案**：用 **Firecrawl** 抓取Booking.com搜索结果页的"仅剩X间"/"Sold Out"标签  
 > 可提取真实预订紧张度信号，比场景模拟更准确
 

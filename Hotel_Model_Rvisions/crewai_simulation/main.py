@@ -242,16 +242,10 @@ def get_market_signal(sim_hour: int, real_data: dict, fc_data: dict) -> dict:
                        market_sc.sim_zhuhai_saturation + _jitter(0.0, 0.03))), 3)
         zhuhai_source = f"scenario_{market_sc.name}"
 
-    # ota_booking_pace：优先MakCorps真实数据 → Firecrawl → 场景模拟
-    mc_pace   = real_data.get("makcorps_ota_pace")
-    mc_source = real_data.get("makcorps_ota_source", "no_key")
+    # ota_booking_pace：优先 Firecrawl → 场景模拟
     fc_pace     = fc_data.get("ota_booking_pace_fc")
     fc_pace_src = fc_data.get("ota_pace_source", "simulated")
-    # 修正(2026-06-01): 增加 "makcorps_disabled" 到拦截列表（防止signal=None但source变更时误通过）
-    if mc_pace is not None and mc_source not in ("no_key", "makcorps_failed", "import_error", "makcorps_disabled"):
-        ota_pace        = round(max(0.0, min(1.0, mc_pace)), 3)
-        ota_pace_source = mc_source                 # "makcorps" or "makcorps_cached"
-    elif fc_pace is not None and fc_pace_src not in ("simulated", "fallback"):
+    if fc_pace is not None and fc_pace_src not in ("simulated", "fallback"):
         ota_pace        = round(max(0.0, min(1.0, fc_pace)), 3)
         ota_pace_source = fc_pace_src
     else:
@@ -413,7 +407,7 @@ def main():
 
         for h_idx, hotel in enumerate(ALL_HOTELS):
             scenario = get_scenario(h_idx, hour)
-            # 动态计算base_price：DSEC×85% + MakCorps×15%（替代随机数）
+            # 动态计算base_price：真实BAR/OTA + DSEC（替代随机数）
             _ota_in = _ota_ref_45 if hotel["star"] >= 4 else _ota_ref_23
             hotel = dict(hotel)
             hotel["base_price"] = compute_dynamic_base_price(

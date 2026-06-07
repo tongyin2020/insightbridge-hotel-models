@@ -3,7 +3,7 @@ InsightBridge — 澳门76家真实酒店数据采集器
 hotel_data_collector.py
 ================================================
 每天 09:00 / 22:00 由 launchd 触发
-通过 Playwright + BrightData(兜底) 采集76家酒店：
+通过 Firecrawl + BrightData/Shifter + Playwright(末级兜底) 采集76家酒店：
   轨道A：官网BAR价格（最优可订价）
   轨道B：OTA竞对价 + 间接库存/CRM信号
 
@@ -61,16 +61,23 @@ except ImportError:
 
 # ── 路径 & 配置 ────────────────────────────────────────────────────────────
 BASE_DIR   = Path(__file__).parent
-ENV_FILE   = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/.env")
 DB_PATH    = BASE_DIR / "hotel_real_data.db"
 LOG_PATH   = BASE_DIR / "collector.log"
+ENV_FILES = [
+    Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/.env"),
+    Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/system2_claude_simulation/.env"),
+    Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/system3_crewai/.env"),
+]
 
-load_dotenv(ENV_FILE)
+for _env_file in ENV_FILES:
+    if _env_file.exists():
+        load_dotenv(_env_file, override=False)
 
 # ── BrightData Web Unlocker API（替代 Shifter）────────────────────────────
 BRIGHTDATA_TOKEN = os.getenv("BRIGHTDATA_TOKEN", "")
 BRIGHTDATA_ZONE  = os.getenv("BRIGHTDATA_ZONE",  "insightbridge_hotels")
 BRIGHTDATA_URL   = "https://api.brightdata.com/request"
+FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "")
 
 # 每日请求计数器（安全保护，防止意外超额）
 _BD_DAILY_LIMIT  = 1500   # 每天最多1500次 = 约 $2.25
@@ -109,6 +116,84 @@ def _bd_fetch(url: str, timeout: int = 35) -> requests.Response | None:
         log.debug(f"[BrightData] 请求失败: {e}")
         return None
 
+
+def _fc_scrape(url: str, timeout: int = 35) -> str:
+    """通过 Firecrawl scrape 单页，返回 markdown/html 文本，失败返回空字符串。"""
+    if not FIRECRAWL_API_KEY or "your_" in FIRECRAWL_API_KEY:
+        return ""
+    try:
+        r = requests.post(
+            "https://api.firecrawl.dev/v2/scrape",
+            headers={
+                "Authorization": f"Bearer {FIRECRAWL_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={"url": url, "formats": ["markdown", "html"]},
+            timeout=timeout,
+        )
+        if r.status_code == 200:
+            data = r.json().get("data") or {}
+            return f"{data.get('markdown','')}\n{data.get('html','')}"
+    except Exception as e:
+        log.debug(f"[Firecrawl] scrape失败: {e}")
+    return ""
+
+
+def _extract_mop_prices(text: str, min_price: int = 200, max_price: int = 80000) -> list[int]:
+    prices = []
+    for pat in [
+        r'MOP[\s\xa0]*([\d]{1,2},[\d]{3}|[\d]{3,5})',
+        r'HKD[\s\xa0]*([\d]{1,2},[\d]{3}|[\d]{3,5})',
+        r'HK\$[\s\xa0]*([\d]{1,2},[\d]{3}|[\d]{3,5})',
+    ]:
+        for raw in re.findall(pat, text, re.I):
+            try:
+                v = int(str(raw).replace(",", ""))
+                if min_price <= v <= max_price:
+                    prices.append(v)
+            except Exception:
+                pass
+    return sorted(set(prices))
+
+
+def _extract_agoda_rate_from_text(text: str) -> tuple[float | None, str]:
+    """
+    从 Agoda 页面文本中提取更可信的房价。
+    优先级：
+      1. “average room price ... $405” 这类酒店均价描述（USD → MOP）
+      2. 一般性的 “$405” 酒店均价描述（USD → MOP）
+      3. “1234 MOP” 这类价格，但排除早餐/停车/接送等附加费用
+    """
+    lower = text.lower()
+
+    avg_usd_patterns = [
+        r'average room price(?:s)?[^$]{0,80}\$([\d]{2,4})',
+        r'room price of just \$([\d]{2,4})',
+        r'with an average room price of just \$([\d]{2,4})',
+    ]
+    for pat in avg_usd_patterns:
+        m = re.search(pat, lower, re.I)
+        if m:
+            usd = float(m.group(1))
+            return round(usd * 8.03, 1), "agoda_avg_usd_text"
+
+    for m in re.finditer(r'([\d]{3,5})\s*MOP', text, re.I):
+        try:
+            price = int(m.group(1))
+        except Exception:
+            continue
+        window = text[max(0, m.start() - 80): m.end() + 80].lower()
+        if any(bad in window for bad in [
+            "airport transfer fee", "breakfast charge", "daily parking fee",
+            "parking fee", "fee:", "distance from city center", "room voltage",
+            "number of rooms", "number of floors"
+        ]):
+            continue
+        if 600 <= price <= 12000:
+            return float(price), "agoda_mop_text"
+
+    return None, "agoda_no_parse"
+
 # ── Shifter（已停用，保留变量避免报错）─────────────────────────────────────
 SHIFTER_USER = os.getenv("SHIFTER_USER", "")
 SHIFTER_PASS = os.getenv("SHIFTER_PASS", "")
@@ -117,6 +202,19 @@ SHIFTER_PORT = os.getenv("SHIFTER_PORT", "443")
 
 # 采集未来哪几天的入住价格
 CHECKIN_OFFSETS = [1, 7, 14, 30]   # 今天+N天
+MAX_COLLECTION_MINUTES = int(os.getenv("MAX_COLLECTION_MINUTES", "65"))
+FAST_MODE_BUFFER_MINUTES = int(os.getenv("FAST_MODE_BUFFER_MINUTES", "20"))
+CRITICAL_MODE_BUFFER_MINUTES = int(os.getenv("CRITICAL_MODE_BUFFER_MINUTES", "10"))
+
+# ── 单站点/单步骤时间预算（控制整轮总时长）──────────────────────────────
+REQ_TIMEOUT_SHORT = 10
+REQ_TIMEOUT_MEDIUM = 12
+REQ_TIMEOUT_LONG = 15
+UNLOCKER_TIMEOUT = 18
+PW_GOTO_TIMEOUT_MS = 6000
+PW_NETWORK_TIMEOUT_MS = 3500
+PW_WAIT_MS = 800
+PW_WAIT_LONG_MS = 1500
 
 # ── 日志 ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -678,7 +776,7 @@ def _pw_launch_with_shifter(pw, locale: str = "zh-HK"):
 #  数据库初始化
 # ══════════════════════════════════════════════════════════════════════════
 def init_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH, timeout=20)
+    conn = sqlite3.connect(DB_PATH, timeout=REQ_TIMEOUT_LONG)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript("""
     CREATE TABLE IF NOT EXISTS price_snapshots (
@@ -1037,11 +1135,11 @@ def _fetch_mgm_price(hotel: dict, checkin: str, checkout: str, ctx) -> dict | No
             f"?locale=en-US&template={template}&hotel={hotel_code}"
             f"&checkIn={checkin}&checkOut={checkout}"
         )
-        page.goto(mgm_url, timeout=8000, wait_until="domcontentloaded")
+        page.goto(mgm_url, timeout=PW_GOTO_TIMEOUT_MS, wait_until="domcontentloaded")
         try:
-            page.wait_for_load_state("networkidle", timeout=5000)
+            page.wait_for_load_state("networkidle", timeout=PW_NETWORK_TIMEOUT_MS)
         except PwTimeout:
-            page.wait_for_timeout(1000)
+            page.wait_for_timeout(PW_WAIT_MS)
 
         page.close()
 
@@ -1132,7 +1230,7 @@ def fetch_official_price(hotel: dict, checkin: str, sess: requests.Session) -> d
                     f"https://api.synxis.com/availability/v1/hotel/{hotel_code}?arrive={checkin}&depart={checkout}&chain={chain_code}&rooms=1&adults=2",
                 ]:
                     try:
-                        r1 = sess.get(api_url, timeout=12,
+                        r1 = sess.get(api_url, timeout=REQ_TIMEOUT_SHORT,
                                       headers={"Accept": "application/json, text/javascript, */*"})
                         if r1.status_code == 200:
                             txt = r1.text.strip()
@@ -1182,7 +1280,7 @@ def fetch_official_price(hotel: dict, checkin: str, sess: requests.Session) -> d
                         f"&arrive={checkin}&depart={checkout}&rooms=1&adults=2&currency=MOP"
                     )
                     try:
-                        r1b = sess.get(ibe_page_url, timeout=15,
+                        r1b = sess.get(ibe_page_url, timeout=REQ_TIMEOUT_MEDIUM,
                                        headers={
                                            "Accept": "text/html,application/xhtml+xml,*/*",
                                            "Referer": f"https://be.synxis.com/?hotel={hotel_code}&chain={chain_code}",
@@ -1237,7 +1335,7 @@ def fetch_official_price(hotel: dict, checkin: str, sess: requests.Session) -> d
 
         for attempt_url, verify_flag in zip(attempt_urls, verify_flags):
             try:
-                r = sess.get(attempt_url, timeout=15, verify=verify_flag,
+                r = sess.get(attempt_url, timeout=REQ_TIMEOUT_MEDIUM, verify=verify_flag,
                              headers=req_headers)
                 if r.status_code == 200:
                     break
@@ -1330,11 +1428,11 @@ def fetch_official_price(hotel: dict, checkin: str, sess: requests.Session) -> d
                 sep = "&" if "?" in url else "?"
                 full_url = f"{url}{sep}checkin={checkin}&checkout={checkout}&adults=2&rooms=1"
 
-                page.goto(full_url, timeout=8000, wait_until="domcontentloaded")
+                page.goto(full_url, timeout=PW_GOTO_TIMEOUT_MS, wait_until="domcontentloaded")
                 try:
-                    page.wait_for_load_state("networkidle", timeout=5000)
+                    page.wait_for_load_state("networkidle", timeout=PW_NETWORK_TIMEOUT_MS)
                 except PwTimeout:
-                    page.wait_for_timeout(1000)
+                    page.wait_for_timeout(PW_WAIT_MS)
 
                 html = page.content()
                 page_prices = _extract_prices(html)
@@ -1425,11 +1523,11 @@ def fetch_official_price(hotel: dict, checkin: str, sess: requests.Session) -> d
                 page2.on("response", on_synxis_response)
                 page2.goto(ibe_direct_url, timeout=8000, wait_until="domcontentloaded")
                 try:
-                    page2.wait_for_load_state("networkidle", timeout=5000)
+                    page2.wait_for_load_state("networkidle", timeout=PW_NETWORK_TIMEOUT_MS)
                 except PwTimeout:
-                    page2.wait_for_timeout(1000)
+                    page2.wait_for_timeout(PW_WAIT_MS)
                 # 额外等待SynXis价格异步加载
-                page2.wait_for_timeout(1000)
+                page2.wait_for_timeout(PW_WAIT_MS)
 
                 ibe_html = page2.content()
                 _tier_floor = {"5_deluxe": 800, "5_star": 600, "4_star": 500, "3_star": 280}
@@ -1465,7 +1563,7 @@ def fetch_official_price(hotel: dict, checkin: str, sess: requests.Session) -> d
                     f"?checkin={checkin}&checkout={checkout}&group_adults=2&no_rooms=1"
                     f"&selected_currency=MOP"
                 )
-                rb = sess.get(bcom_url, timeout=15, verify=False,
+                rb = sess.get(bcom_url, timeout=REQ_TIMEOUT_MEDIUM, verify=False,
                               headers={
                                   "Accept": "text/html,application/xhtml+xml,*/*",
                                   "Referer": "https://www.booking.com/",
@@ -1535,7 +1633,7 @@ def fetch_official_price(hotel: dict, checkin: str, sess: requests.Session) -> d
                         headers={"Content-Type": "application/json",
                                  "Authorization": f"Bearer {bd_token}"},
                         json={"zone": bd_zone, "url": try_url, "format": "raw"},
-                        timeout=40
+                        timeout=UNLOCKER_TIMEOUT
                     )
                     if bd_r.status_code == 200 and bd_r.text:
                         raw = re.findall(r'MOP\s*([\d]{1,2},[\d]{3}|[\d]{3,5})', bd_r.text)
@@ -1563,8 +1661,7 @@ def fetch_official_price(hotel: dict, checkin: str, sess: requests.Session) -> d
 def fetch_ota_signals(hotel: dict, checkin: str, sess: requests.Session) -> dict:
     """
     从 Booking.com 抓取 OTA 价格和库存标签。
-    主路径：Playwright + Shifter（绕过 Booking.com 202 bot challenge）
-    备用路径：requests.Session + Shifter（若 Playwright 不可用）
+    默认顺序：Firecrawl → BrightData → requests+Shifter → Playwright兜底
     """
     result = {
         "booking_rate": None, "agoda_rate": None,
@@ -1581,86 +1678,47 @@ def fetch_ota_signals(hotel: dict, checkin: str, sess: requests.Session) -> dict
            f"?checkin={checkin}&checkout={checkout}"
            f"&group_adults=2&no_rooms=1&selected_currency=MOP&lang=zh-hk")
 
-    # ── 主路径：Playwright + Shifter 代理（JS 渲染 + 绕过 bot 防护）──────
+    # ── 主路径：Firecrawl（稳定优先）──────────────────────────────────
     try:
-        with sync_playwright() as pw:
-            browser, ctx = _pw_launch_with_shifter(pw, locale="zh-HK")
-            page = ctx.new_page()
-            page.goto(url, timeout=8000, wait_until="domcontentloaded")
-            page.wait_for_timeout(2000)
-            content = page.content()
-            ctx.close(); browser.close()
-
-        soup = BeautifulSoup(content, "html.parser")
-
-        # 价格：多个选择器兜底（Booking.com 频繁改 class 名）
-        for sel in [
-            '[data-testid="price-and-discounted-price"]',
-            '[data-testid="recommended-units"] .prco-inline-block-maker-helper',
-            '.bui-price-display__value',
-            '[class*="prco-inline-block"]',
-            '.fcab3ed991',          # Booking.com 2025 class
-        ]:
-            for tag in soup.select(sel):
-                txt = re.sub(r'[^\d.]', '', tag.get_text())
-                if txt:
-                    try:
-                        p = float(txt)
-                        if 200 < p < 100000:
-                            result["booking_rate"] = p
-                            break
-                    except Exception:
-                        pass
-            if result["booking_rate"]:
-                break
-
-        # JSON-LD 价格备用
-        if result["booking_rate"] is None:
-            for m in re.finditer(r'<script[^>]*application/ld\+json[^>]*>(.*?)</script>',
-                                 content, re.DOTALL):
+        fc_text = _fc_scrape(url, timeout=UNLOCKER_TIMEOUT)
+        if fc_text:
+            prices = _extract_mop_prices(fc_text, 400, 80000)
+            real_prices = [p for p in prices if p > 800]
+            if real_prices:
+                result["booking_rate"] = float(real_prices[0])
+                result["notes_ota"] += "bcom_firecrawl_ok;"
+            page_text = fc_text.lower()
+            if any(kw in page_text for kw in ["only 1 room", "只剩1間", "仅剩1间",
+                                              "last room", "high demand", "尚餘1間"]):
+                result["low_stock_flag"] = 1
+            m_score = re.search(r'"ratingValue"\s*:\s*"?(\d+\.?\d*)"?', fc_text)
+            if m_score:
                 try:
-                    d = json.loads(m.group(1))
-                    if isinstance(d, dict) and d.get("@type") == "Hotel":
-                        offers = d.get("makesOffer", []) or d.get("offers", [])
-                        if isinstance(offers, dict): offers = [offers]
-                        for o in offers:
-                            price = o.get("price") or o.get("lowPrice")
-                            if price and float(price) > 200:
-                                result["booking_rate"] = float(price)
-                                break
-                    if result["booking_rate"]: break
+                    result["booking_score"] = float(m_score.group(1))
                 except Exception:
                     pass
-
-        # 低库存检测
-        page_text = content.lower()
-        if any(kw in page_text for kw in ["only 1 room", "只剩1間", "仅剩1间",
-                                           "last room", "high demand", "尚餘1間"]):
-            result["low_stock_flag"] = 1
-
-        # 评分提取
-        for sel in ['[data-testid="review-score-right-component"] .ac4a7896c7',
-                    '[data-testid="review-score"] .b5cd09854e',
-                    '.b5cd09854e', '.d10a6220b4']:
-            tag = soup.select_one(sel)
-            if tag:
-                try:
-                    result["booking_score"] = float(tag.get_text(strip=True).replace(",", "."))
-                    break
-                except Exception:
-                    pass
-
-        if result["booking_rate"]:
-            result["notes_ota"] += "bcom_pw_shifter_ok;"
-        else:
-            result["notes_ota"] += "bcom_pw_no_price;"
-
+            if result["booking_rate"] is None:
+                result["notes_ota"] += "bcom_firecrawl_no_price;"
     except Exception as e:
-        result["notes_ota"] += f"bcom_pw:{str(e)[:50]};"
+        result["notes_ota"] += f"bcom_fc:{str(e)[:40]};"
 
-        # ── 备用路径：requests.Session + Shifter ────────────────────────
+    # ── BrightData Web Unlocker 后备 ────────────────────────────────────
+    if result["booking_rate"] is None:
         try:
-            r = sess.get(url, timeout=15)
+            bd_resp = _bd_fetch(url, timeout=UNLOCKER_TIMEOUT)
+            if bd_resp and bd_resp.text:
+                prices = _extract_mop_prices(bd_resp.text, 400, 80000)
+                real_prices = [p for p in sorted(prices) if p > 800]
+                if real_prices:
+                    result["booking_rate"] = float(real_prices[0])
+                    result["notes_ota"] += "bcom_brightdata_ok;"
+        except Exception as e_bd:
+            result["notes_ota"] += f"bcom_bd:{str(e_bd)[:30]};"
+
+    # ── Shifter requests 后备 ──────────────────────────────────────────
+    if result["booking_rate"] is None:
+        try:
+            r = sess.get(url, timeout=REQ_TIMEOUT_MEDIUM)
             if r.status_code == 200:
                 soup2 = BeautifulSoup(r.text, "html.parser")
                 price_tags = soup2.select(
@@ -1678,30 +1736,67 @@ def fetch_ota_signals(hotel: dict, checkin: str, sess: requests.Session) -> dict
                         except Exception:
                             pass
                 if result["booking_rate"]:
-                    result["notes_ota"] += "bcom_req_fallback_ok;"
+                    result["notes_ota"] += "bcom_req_shifter_ok;"
         except Exception as e2:
             result["notes_ota"] += f"bcom_req:{str(e2)[:30]};"
 
-    # ── BrightData Web Unlocker 兜底（最可靠，替代 Firecrawl/Shifter）──────
+    # ── Playwright 末级兜底 ────────────────────────────────────────────
     if result["booking_rate"] is None:
         try:
-            slug = (hotel.get("en") or hotel.get("cn", "hotel")).lower().replace(" ", "-").replace("'","").replace(",","")
-            bd_url = (f"https://www.booking.com/hotel/mo/{slug}.html"
-                      f"?checkin={checkin}&checkout="
-                      f"{(datetime.strptime(checkin,'%Y-%m-%d')+timedelta(days=1)).strftime('%Y-%m-%d')}"
-                      f"&group_adults=2&no_rooms=1&selected_currency=MOP")
-            bd_resp = _bd_fetch(bd_url, timeout=40)
-            if bd_resp and bd_resp.text:
-                raw_prices = re.findall(r'MOP\s*([\d]{1,2},[\d]{3}|[\d]{3,5})', bd_resp.text)
-                prices = [int(p.replace(",","")) for p in raw_prices
-                          if 400 <= int(p.replace(",","")) <= 80000]
-                # 过滤掉 400/575 这类服务费，取第一个真实房价（>800）
-                real_prices = [p for p in sorted(prices) if p > 800]
-                if real_prices:
-                    result["booking_rate"] = float(real_prices[0])
-                    result["notes_ota"] += "bcom_brightdata_ok;"
-        except Exception as e_bd:
-            result["notes_ota"] += f"bcom_bd:{str(e_bd)[:30]};"
+            with sync_playwright() as pw:
+                browser, ctx = _pw_launch_with_shifter(pw, locale="zh-HK")
+                page = ctx.new_page()
+                page.goto(url, timeout=PW_GOTO_TIMEOUT_MS, wait_until="domcontentloaded")
+                page.wait_for_timeout(PW_WAIT_LONG_MS)
+                content = page.content()
+                ctx.close(); browser.close()
+
+            soup = BeautifulSoup(content, "html.parser")
+            for sel in [
+                '[data-testid="price-and-discounted-price"]',
+                '[data-testid="recommended-units"] .prco-inline-block-maker-helper',
+                '.bui-price-display__value',
+                '[class*="prco-inline-block"]',
+                '.fcab3ed991',
+            ]:
+                for tag in soup.select(sel):
+                    txt = re.sub(r'[^\d.]', '', tag.get_text())
+                    if txt:
+                        try:
+                            p = float(txt)
+                            if 200 < p < 100000:
+                                result["booking_rate"] = p
+                                break
+                        except Exception:
+                            pass
+                if result["booking_rate"]:
+                    break
+
+            if result["booking_rate"] is None:
+                for m in re.finditer(r'<script[^>]*application/ld\+json[^>]*>(.*?)</script>',
+                                     content, re.DOTALL):
+                    try:
+                        d = json.loads(m.group(1))
+                        if isinstance(d, dict) and d.get("@type") == "Hotel":
+                            offers = d.get("makesOffer", []) or d.get("offers", [])
+                            if isinstance(offers, dict):
+                                offers = [offers]
+                            for o in offers:
+                                price = o.get("price") or o.get("lowPrice")
+                                if price and float(price) > 200:
+                                    result["booking_rate"] = float(price)
+                                    break
+                        if result["booking_rate"]:
+                            break
+                    except Exception:
+                        pass
+
+            if result["booking_rate"]:
+                result["notes_ota"] += "bcom_pw_shifter_ok;"
+            else:
+                result["notes_ota"] += "bcom_pw_no_price;"
+        except Exception as e:
+            result["notes_ota"] += f"bcom_pw:{str(e)[:50]};"
 
     return result
 
@@ -1764,8 +1859,8 @@ def fetch_inventory_signals(hotel: dict, checkin: str,
             # 使用 Shifter 住宅代理（绕过 Booking.com 反爬）
             browser, ctx = _pw_launch_with_shifter(pw, locale="zh-HK")
             page = ctx.new_page()
-            page.goto(url, timeout=8000, wait_until="domcontentloaded")
-            page.wait_for_timeout(2000)
+            page.goto(url, timeout=PW_GOTO_TIMEOUT_MS, wait_until="domcontentloaded")
+            page.wait_for_timeout(PW_WAIT_LONG_MS)
             content = page.content()
             ctx.close(); browser.close()
 
@@ -1803,8 +1898,7 @@ def fetch_inventory_signals(hotel: dict, checkin: str,
 # ══════════════════════════════════════════════════════════════════════════
 def fetch_agoda_ota(hotel: dict, checkin: str, sess: requests.Session) -> dict:
     """
-    通过 Playwright + Shifter 抓取 Agoda 单家酒店最低价和评分。
-    Agoda 为纯 JS 渲染，必须用 Playwright；Shifter 代理绕过地区限制。
+    默认顺序：Firecrawl → BrightData → Playwright + Shifter 兜底。
     返回 {"agoda_rate": float|None, "agoda_score": float|None, "notes_agoda": str}
     """
     result = {"agoda_rate": None, "agoda_score": None, "notes_agoda": ""}
@@ -1813,64 +1907,100 @@ def fetch_agoda_ota(hotel: dict, checkin: str, sess: requests.Session) -> dict:
         return result
 
     checkout = (datetime.strptime(checkin, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
-    # Agoda 澳门城市搜索（city=8646 = Macau）+ 酒店名称关键字
-    url = (f"https://www.agoda.com/zh-hk/search?city=8646"
-           f"&checkIn={checkin}&checkOut={checkout}&rooms=1&adults=2"
-           f"&selectedCurrency=MOP&textToSearch={requests.utils.quote(hotel['en'])}")
+    slug = hotel["en"].lower().replace(" ", "-").replace("'", "").replace(",", "").replace(".", "")
+    urls = [
+        f"https://www.agoda.com/{slug}/hotel/macau-mo.html?checkIn={checkin}&los=1&adults=2&rooms=1&selectedCurrency=MOP",
+        f"https://www.agoda.com/zh-hk/{slug}/hotel/macau-mo.html?checkIn={checkin}&los=1&adults=2&rooms=1&selectedCurrency=MOP",
+        f"https://www.agoda.com/search?city=8646&checkIn={checkin}&checkOut={checkout}&rooms=1&adults=2&selectedCurrency=MOP&textToSearch={requests.utils.quote(hotel['en'])}",
+        f"https://www.agoda.com/zh-hk/search?city=8646&checkIn={checkin}&checkOut={checkout}&rooms=1&adults=2&selectedCurrency=MOP&textToSearch={requests.utils.quote(hotel['en'])}",
+    ]
+    min_valid_rate = 1000.0 if hotel.get("star", 3) >= 5 else 700.0 if hotel.get("star", 3) == 4 else 300.0
 
-    try:
-        with sync_playwright() as pw:
-            browser, ctx = _pw_launch_with_shifter(pw, locale="zh-HK")
-            page = ctx.new_page()
-            page.goto(url, timeout=8000, wait_until="domcontentloaded")
-            page.wait_for_timeout(2000)   # Agoda 价格延迟渲染
+    for idx, url in enumerate(urls):
+        label = f"u{idx+1}"
+        try:
+            fc_text = _fc_scrape(url, timeout=UNLOCKER_TIMEOUT)
+            if fc_text:
+                parsed_rate, parsed_source = _extract_agoda_rate_from_text(fc_text)
+                if parsed_rate:
+                    if float(parsed_rate) >= min_valid_rate:
+                        result["agoda_rate"] = float(parsed_rate)
+                        result["notes_agoda"] += f"{label}:{parsed_source};agoda_firecrawl_ok;"
+                    else:
+                        result["notes_agoda"] += f"{label}:{parsed_source}_reject_low;"
+                m_r = re.search(r'"ratingValue"\s*:\s*"?(\d+\.?\d*)"?', fc_text)
+                if m_r:
+                    raw = float(m_r.group(1))
+                    result["agoda_score"] = round(raw / 2 if raw > 5 else raw, 1)
+                if result["agoda_rate"] is not None:
+                    break
+        except Exception as e:
+            result["notes_agoda"] += f"agoda_fc_{label}:{str(e)[:30]};"
+    if result["agoda_rate"] is None:
+        result["notes_agoda"] += "agoda_firecrawl_no_price;"
 
-            content = page.content()
-            ctx.close(); browser.close()
-
-        # 提取 MOP 价格
-        prices_mop = re.findall(r'MOP[\s\xa0]*([\d,]+)', content)
-        valid = []
-        for p in prices_mop:
+    if result["agoda_rate"] is None:
+        for idx, url in enumerate(urls):
+            label = f"u{idx+1}"
             try:
-                v = int(p.replace(",", ""))
-                if 200 < v < 80000:
-                    valid.append(v)
-            except Exception:
-                pass
-        if valid:
-            result["agoda_rate"] = float(min(valid))
-            result["notes_agoda"] = "agoda_pw_ok"
+                bd_resp = _bd_fetch(url, timeout=UNLOCKER_TIMEOUT)
+                if bd_resp and bd_resp.text:
+                    parsed_rate, parsed_source = _extract_agoda_rate_from_text(bd_resp.text)
+                    if parsed_rate:
+                        if float(parsed_rate) >= min_valid_rate:
+                            result["agoda_rate"] = float(parsed_rate)
+                            result["notes_agoda"] += f"{label}:{parsed_source};agoda_brightdata_ok;"
+                            break
+                        else:
+                            result["notes_agoda"] += f"{label}:{parsed_source}_reject_low;"
+            except Exception as e:
+                result["notes_agoda"] += f"agoda_bd_{label}:{str(e)[:30]};"
 
-        # JSON-LD 评分
-        for m in re.finditer(r'<script[^>]*application/ld\+json[^>]*>(.*?)</script>',
-                             content, re.DOTALL):
-            try:
-                d = json.loads(m.group(1))
-                if isinstance(d, dict):
-                    agg = d.get("aggregateRating", {})
-                    rv = agg.get("ratingValue")
-                    if rv:
-                        raw = float(rv)
-                        result["agoda_score"] = round(raw / 2 if raw > 5 else raw, 1)
-                        break
-            except Exception:
-                pass
+    if result["agoda_rate"] is None:
+        try:
+            url = urls[0]
+            with sync_playwright() as pw:
+                browser, ctx = _pw_launch_with_shifter(pw, locale="zh-HK")
+                page = ctx.new_page()
+                page.goto(url, timeout=PW_GOTO_TIMEOUT_MS, wait_until="domcontentloaded")
+                page.wait_for_timeout(PW_WAIT_LONG_MS)
+                content = page.content()
+                ctx.close(); browser.close()
 
-        # 正则评分备用（Agoda 数字评分形如 "9.2"）
-        if result["agoda_score"] is None:
-            m_r = re.search(r'"ratingValue"\s*:\s*"?(\d+\.?\d*)"?', content)
-            if m_r:
-                raw = float(m_r.group(1))
-                result["agoda_score"] = round(raw / 2 if raw > 5 else raw, 1)
+            parsed_rate, parsed_source = _extract_agoda_rate_from_text(content)
+            if parsed_rate:
+                if float(parsed_rate) >= min_valid_rate:
+                    result["agoda_rate"] = float(parsed_rate)
+                    result["notes_agoda"] += f"{parsed_source};agoda_pw_ok;"
+                else:
+                    result["notes_agoda"] += f"{parsed_source}_reject_low;"
 
-        if result["agoda_rate"]:
-            log.debug(f"  Agoda {hotel['cn']}: MOP {result['agoda_rate']:.0f} | ★{result['agoda_score']}")
-        else:
-            result["notes_agoda"] += "agoda_no_price;"
+            for m in re.finditer(r'<script[^>]*application/ld\+json[^>]*>(.*?)</script>',
+                                 content, re.DOTALL):
+                try:
+                    d = json.loads(m.group(1))
+                    if isinstance(d, dict):
+                        agg = d.get("aggregateRating", {})
+                        rv = agg.get("ratingValue")
+                        if rv:
+                            raw = float(rv)
+                            result["agoda_score"] = round(raw / 2 if raw > 5 else raw, 1)
+                            break
+                except Exception:
+                    pass
 
-    except Exception as e:
-        result["notes_agoda"] += f"agoda_pw:{str(e)[:50]};"
+            if result["agoda_score"] is None:
+                m_r = re.search(r'"ratingValue"\s*:\s*"?(\d+\.?\d*)"?', content)
+                if m_r:
+                    raw = float(m_r.group(1))
+                    result["agoda_score"] = round(raw / 2 if raw > 5 else raw, 1)
+
+            if result["agoda_rate"]:
+                log.debug(f"  Agoda {hotel['cn']}: MOP {result['agoda_rate']:.0f} | ★{result['agoda_score']}")
+            else:
+                result["notes_agoda"] += "agoda_pw_no_price;"
+        except Exception as e:
+            result["notes_agoda"] += f"agoda_pw:{str(e)[:50]};"
 
     return result
 
@@ -1915,8 +2045,8 @@ def fetch_tripdotcom_inventory(hotel: dict, checkin: str,
         with sync_playwright() as pw:
             browser, ctx = _pw_launch_with_shifter(pw, locale="zh-HK")
             page = ctx.new_page()
-            page.goto(search_url, timeout=8000, wait_until="domcontentloaded")
-            page.wait_for_timeout(2000)
+            page.goto(search_url, timeout=PW_GOTO_TIMEOUT_MS, wait_until="domcontentloaded")
+            page.wait_for_timeout(PW_WAIT_LONG_MS)
             content = page.content()
             ctx.close(); browser.close()
 
@@ -1991,7 +2121,7 @@ def fetch_agoda_rating(hotel: dict, conn: sqlite3.Connection,
     try:
         slug = hotel["en"].lower().replace(" ", "-").replace("'", "").replace(",", "")
         url = f"https://www.agoda.com/en-gb/{slug}/{agoda_id}.html?selectedCurrency=MOP"
-        r = sess.get(url, timeout=20, headers={"Accept-Language": "zh-HK,zh;q=0.9,en;q=0.8"})
+        r = sess.get(url, timeout=REQ_TIMEOUT_LONG, headers={"Accept-Language": "zh-HK,zh;q=0.9,en;q=0.8"})
         if r.status_code == 200:
             # JSON-LD structured data
             for m in re.finditer(r'<script[^>]*application/ld\+json[^>]*>(.*?)</script>',
@@ -2071,8 +2201,8 @@ def fetch_google_rating(hotel: dict, conn: sqlite3.Connection,
                 # 升级：使用 Shifter 代理（绕过 Booking.com bot 防护）
                 browser, ctx = _pw_launch_with_shifter(pw, locale="zh-HK")
                 page = ctx.new_page()
-                page.goto(url, timeout=8000, wait_until="domcontentloaded")
-                page.wait_for_timeout(2000)
+                page.goto(url, timeout=PW_GOTO_TIMEOUT_MS, wait_until="domcontentloaded")
+                page.wait_for_timeout(PW_WAIT_LONG_MS)
                 content = page.content()
                 ctx.close()
                 browser.close()
@@ -2119,7 +2249,7 @@ def fetch_google_rating(hotel: dict, conn: sqlite3.Connection,
     # ── 方法1：TripAdvisor 搜索结果页 JSON-LD（Booking.com Playwright已优先，这里作备用）──
     try:
         ta_url = f"https://www.tripadvisor.com/Search?q={requests.utils.quote(hotel['en'] + ' Macau')}"
-        r = sess.get(ta_url, timeout=15, headers={"Accept-Language": "en-US,en;q=0.9"})
+        r = sess.get(ta_url, timeout=REQ_TIMEOUT_MEDIUM, headers={"Accept-Language": "en-US,en;q=0.9"})
         if r.status_code == 200:
             for m in re.finditer(r'<script[^>]*application/ld\+json[^>]*>(.*?)</script>',
                                  r.text, re.DOTALL):
@@ -2155,7 +2285,7 @@ def fetch_google_rating(hotel: dict, conn: sqlite3.Connection,
             if bcom_id:
                 slug = hotel["en"].lower().replace(" ", "-").replace("'", "")
                 url = f"https://www.booking.com/hotel/mo/{slug}.html?selected_currency=MOP"
-                r = sess.get(url, timeout=15)
+                r = sess.get(url, timeout=REQ_TIMEOUT_MEDIUM)
                 if r.status_code == 200:
                     # JSON-LD
                     for m in re.finditer(r'<script[^>]*application/ld\+json[^>]*>(.*?)</script>',
@@ -2230,7 +2360,7 @@ def fetch_review_sentiment(hotel: dict, conn: sqlite3.Connection,
         api_url = (f"https://www.booking.com/reviewlist.html"
                    f"?cc1=mo&pagename={hotel['en'].lower().replace(' ','-')}"
                    f"&type=total&rows=15&offset=0&sort=f_recent_desc&lang=zh-cn")
-        r = sess.get(api_url, timeout=15)
+        r = sess.get(api_url, timeout=REQ_TIMEOUT_MEDIUM)
 
         zh_texts, en_texts = [], []
         if r.status_code == 200:
@@ -2335,6 +2465,10 @@ def calc_price_trend(conn: sqlite3.Connection, hotel_id: str, checkin: str, curr
     return trend
 
 
+def _seconds_left(deadline_ts: float) -> float:
+    return max(0.0, deadline_ts - time.time())
+
+
 # ══════════════════════════════════════════════════════════════════════════
 #  写入数据库
 # ══════════════════════════════════════════════════════════════════════════
@@ -2398,13 +2532,25 @@ def run_collection(hotels: list[dict], label: str = "FULL"):
     snap_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     today = datetime.now().date()
     checkin_dates = [(today + timedelta(days=d)).strftime("%Y-%m-%d") for d in CHECKIN_OFFSETS]
+    started_ts = time.time()
+    deadline_ts = started_ts + MAX_COLLECTION_MINUTES * 60
+    fast_mode_threshold = FAST_MODE_BUFFER_MINUTES * 60
+    critical_mode_threshold = CRITICAL_MODE_BUFFER_MINUTES * 60
 
     log.info(f"=== 开始采集 [{label}] | {snap_time} | {len(hotels)}家酒店 × {len(checkin_dates)}个入住日期 ===")
+    log.info(f"=== 时间预算：总上限 {MAX_COLLECTION_MINUTES} 分钟；进入 Fast Mode 剩余 {FAST_MODE_BUFFER_MINUTES} 分钟；进入 Critical Mode 剩余 {CRITICAL_MODE_BUFFER_MINUTES} 分钟 ===")
 
     ok_count = fail_count = 0
     for i, hotel in enumerate(hotels, 1):
+        if _seconds_left(deadline_ts) <= 0:
+            log.warning("=== 达到总时长上限，停止后续酒店采集 ===")
+            break
+
         sess = make_session()   # 每家酒店换一个代理会话
         log.info(f"[{i:02d}/{len(hotels)}] {hotel['cn']} ({hotel['tier']})")
+        remaining = _seconds_left(deadline_ts)
+        fast_mode = remaining <= fast_mode_threshold
+        critical_mode = remaining <= critical_mode_threshold
 
         # ── 每家酒店每天只跑一次的模块 ──────────────────────────────────
         today_str = datetime.now().strftime("%Y-%m-%d")
@@ -2415,7 +2561,7 @@ def run_collection(hotels: list[dict], label: str = "FULL"):
 
         # ── 评分采集：Booking.com（Playwright+Shifter）→ Agoda fallback ─────
         g_result = {"google_rating": None, "review_count": None}
-        if not rating_already:
+        if not rating_already and not critical_mode:
             g_result = fetch_google_rating(hotel, conn, sess)
             # Booking.com 评分失败时，用 Agoda 评分补充（亚洲酒店 Agoda 覆盖更好）
             if not g_result.get("google_rating"):
@@ -2426,7 +2572,7 @@ def run_collection(hotels: list[dict], label: str = "FULL"):
         g_str = f"★{g_result['google_rating']}" if g_result.get("google_rating") else "★N/A"
 
         # 评论情感（每天更新一次，已采集则跳过）
-        sent_result = fetch_review_sentiment(hotel, conn, sess)
+        sent_result = fetch_review_sentiment(hotel, conn, sess) if not critical_mode else {"avg_sentiment": None, "sentiment_label": None}
         s_str = f"情感{sent_result['avg_sentiment']:.2f}({sent_result.get('sentiment_label','')})" \
                 if sent_result.get("avg_sentiment") else "情感N/A"
 
@@ -2449,15 +2595,29 @@ def run_collection(hotels: list[dict], label: str = "FULL"):
         _rating_saved_this_hotel = bool(rating_already or g_result.get("google_rating"))
 
         for checkin in checkin_dates:
+            remaining = _seconds_left(deadline_ts)
+            fast_mode = remaining <= fast_mode_threshold
+            critical_mode = remaining <= critical_mode_threshold
+            if remaining <= 0:
+                log.warning("=== 达到总时长上限，停止后续入住日期采集 ===")
+                break
+
             # 随机延迟：避免反爬
-            delay = random.uniform(2.5, 7.0) if hotel["tier"] in ("5_deluxe", "5_star") else random.uniform(1.5, 4.0)
+            if critical_mode:
+                delay = random.uniform(0.2, 0.6)
+            elif fast_mode:
+                delay = random.uniform(0.5, 1.2)
+            else:
+                delay = random.uniform(1.0, 2.0) if hotel["tier"] in ("5_deluxe", "5_star") else random.uniform(0.6, 1.5)
             time.sleep(delay)
 
             price_data = fetch_official_price(hotel, checkin, sess)
 
-            # ── OTA 价格：Booking.com（Playwright+Shifter）+ Agoda 双源 ──
-            ota_data   = fetch_ota_signals(hotel, checkin, sess)
-            agoda_data = fetch_agoda_ota(hotel, checkin, sess)
+            # ── OTA 价格：时间吃紧时优先 Booking.com，Agoda 可跳过 ──
+            ota_data = fetch_ota_signals(hotel, checkin, sess)
+            agoda_data = {"agoda_rate": None, "agoda_score": None, "notes_agoda": "agoda_skipped_fastmode;"}
+            if not fast_mode:
+                agoda_data = fetch_agoda_ota(hotel, checkin, sess)
             # 将 Agoda 价格合并进 ota_data（agoda_rate 列）
             if agoda_data.get("agoda_rate") and not ota_data.get("agoda_rate"):
                 ota_data["agoda_rate"] = agoda_data["agoda_rate"]
@@ -2492,10 +2652,10 @@ def run_collection(hotels: list[dict], label: str = "FULL"):
                 except Exception:
                     pass
 
-            # ── 库存信号：Booking.com（Playwright+Shifter）+ Trip.com 双源 ──
-            inv_result = fetch_inventory_signals(hotel, checkin, conn, sess)
+            # ── 库存信号：时间吃紧时保留 Booking.com，跳过 Trip.com 补充 ──
+            inv_result = fetch_inventory_signals(hotel, checkin, conn, sess) if not critical_mode else {"rooms_remaining": None, "avail_level": "available", "urgency_text": ""}
             # Trip.com 补充（若 Booking.com 未检测到紧张库存）
-            if inv_result.get("avail_level") == "available":
+            if inv_result.get("avail_level") == "available" and not fast_mode:
                 trip_inv = fetch_tripdotcom_inventory(hotel, checkin, conn, sess)
                 if trip_inv.get("avail_level") not in ("available", ""):
                     inv_result = trip_inv   # Trip.com 发现紧张信号则采纳
@@ -2515,12 +2675,17 @@ def run_collection(hotels: list[dict], label: str = "FULL"):
             else:
                 fail_count += 1
 
-        time.sleep(random.uniform(3.0, 6.0))   # 酒店间隔
+        if _seconds_left(deadline_ts) <= 0:
+            log.warning("=== 达到总时长上限，停止后续酒店采集 ===")
+            break
+
+        hotel_gap = random.uniform(0.4, 1.0) if fast_mode else random.uniform(0.8, 1.8)
+        time.sleep(hotel_gap)   # 酒店间隔
 
     # ══════════════════════════════════════════════════════════════════════
     #  采集后批量评估：MDP寻客行动选择
     # ══════════════════════════════════════════════════════════════════════
-    if _MDP_OK:
+    if _MDP_OK and _seconds_left(deadline_ts) > 60:
         try:
             mdp_decisions = _run_mdp_sweep(hotels, conn, verbose=True)
             if mdp_decisions:
@@ -2531,7 +2696,7 @@ def run_collection(hotels: list[dict], label: str = "FULL"):
             log.warning(f"[MDP] sweep 异常: {e}")
 
     # ── 每周五运行弹性校准（ε 先验值更新）─────────────────────────────────
-    if _MDP_OK and datetime.now().weekday() == 4:   # Friday=4
+    if _MDP_OK and datetime.now().weekday() == 4 and _seconds_left(deadline_ts) > 120:   # Friday=4
         try:
             cal_result = _calibrate_elasticity(conn)
             log.info(f"[弹性校准] 完成 | {cal_result}")
@@ -2541,7 +2706,8 @@ def run_collection(hotels: list[dict], label: str = "FULL"):
     conn.close()
     total = ok_count + fail_count
     pct = ok_count / total * 100 if total > 0 else 0.0
-    log.info(f"=== 采集完成 | 成功率 {ok_count}/{total} ({pct:.1f}%) | DB: {DB_PATH} ===")
+    elapsed_min = (time.time() - started_ts) / 60.0
+    log.info(f"=== 采集完成 | 成功率 {ok_count}/{total} ({pct:.1f}%) | 总耗时 {elapsed_min:.1f} 分钟 | DB: {DB_PATH} ===")
 
 
 # ══════════════════════════════════════════════════════════════════════════

@@ -6,14 +6,12 @@ ota_signal_tool.py — OTA 预订前兆信号聚合工具
 
 数据源优先级（自动降级）：
   1. Amadeus for Developers  → 酒店搜索量 + 航班需求（免费注册）
-  2. MakCorps                → 竞对实时价格（已有Key）
-  3. Google Trends (pytrends)→ 搜索趋势（免费，限速时跳过）
-  4. 内置规则信号            → 节假日、汇率、季节（兜底）
+  2. Google Trends (pytrends)→ 搜索趋势（免费，限速时跳过）
+  3. 内置规则信号            → 节假日、汇率、季节（兜底）
 
 环境变量（.env）：
   AMADEUS_CLIENT_ID     → https://developers.amadeus.com 免费注册
   AMADEUS_CLIENT_SECRET → 同上
-  MAKCORPS_API_KEY      → 已有（69fad6dbbd5b9206d5e9129b）【付费计划，已开放 /city 分页 + /hotel + /roomtype】
 
 输出：综合 OTA 信号分数（0-100）+ 各维度明细
 """
@@ -171,169 +169,7 @@ def _parse_amadeus_signals(city_code: str, checkin: str, checkout: str) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  数据源 2: MakCorps — 竞对实时价格（付费计划）
-# ══════════════════════════════════════════════════════════════════════
-
-# 代表性酒店 ID（含预算/中档/高档三层，通过 /mapping API 预取）
-# 付费计划使用 /hotel 端点，每家酒店返回 15+ 供应商价格
-HOTEL_IDS_BY_CITY: dict = {
-    "macau":      ["664580",   "306252",   "1734004",  "7807481",  "25444582"],
-    # Sofitel Ponte16, Grand Coloane, Mandarin Oriental, JW Marriott, W Macau
-    "macao":      ["664580",   "306252",   "1734004",  "7807481",  "25444582"],
-    "hong kong":  [],   # 动态通过 /mapping 获取
-    "singapore":  [],
-    "dubai":      [],
-    "bangkok":    [],
-    "tokyo":      [],
-    "london":     [],
-    "paris":      [],
-    "sydney":     [],
-    "new york":   [],
-    "bali":       [],
-}
-
-# 城市名 → Makcorps GEO city_id（用于 /mapping 动态补充）
-MAKCORPS_CITY_GEO_IDS: dict = {
-    "macau":      "664891",
-    "macao":      "664891",
-    "hong kong":  "294217",
-    "singapore":  "294265",
-    "bangkok":    "293916",
-    "tokyo":      "298184",
-    "paris":      "187147",
-    "sydney":     "255060",
-    "bali":       "294226",
-    "new york":   "60763",
-    "london":     "186338",
-}
-
-_MAPPING_CACHE: dict = {}   # city → [hotel_id, ...]
-
-
-def _makcorps_hotel_ids(city: str, api_key: str, max_hotels: int = 5) -> list[str]:
-    """
-    通过 /mapping 端点动态获取城市代表性酒店 ID（结果缓存）
-    """
-    city_lower = city.lower()
-    # 优先使用预设 hotel IDs
-    if HOTEL_IDS_BY_CITY.get(city_lower):
-        return HOTEL_IDS_BY_CITY[city_lower][:max_hotels]
-    # 缓存检查
-    if city_lower in _MAPPING_CACHE:
-        return _MAPPING_CACHE[city_lower][:max_hotels]
-    # 调用 /mapping
-    try:
-        headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
-        q = city_lower.replace(" ", "+")
-        url = f"https://api.makcorps.com/mapping?name={q}&api_key={api_key}"
-        req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=12) as r:
-            data = json.loads(r.read())
-        hotel_ids = [str(x["value"]) for x in data if x.get("type") == "HOTEL"][:max_hotels]
-        _MAPPING_CACHE[city_lower] = hotel_ids
-        return hotel_ids
-    except Exception:
-        return []
-
-
-def _parse_makcorps_comparison(comparison: list) -> list[float]:
-    """
-    解析 /hotel 端点 comparison 响应，提取所有供应商价格
-    格式: comparison[0] = [{vendor1, price1, Totalprice1, tax1}, {vendor2, ...}, ...]
-    """
-    prices = []
-    vendor_list = comparison[0] if (comparison and isinstance(comparison[0], list)) else comparison
-    for item in vendor_list:
-        if not isinstance(item, dict):
-            continue
-        for k, v in item.items():
-            # 匹配 priceN（但排除 TotalpriceN）
-            if k.startswith("price") and not k.startswith("Totalprice"):
-                try:
-                    clean = str(v).replace("$", "").replace(",", "").strip()
-                    prices.append(float(clean))
-                except (ValueError, AttributeError):
-                    pass
-    return prices
-
-
-def _makcorps_prices(city: str, checkin: str, checkout: str) -> dict | None:
-    """
-    查询 MakCorps 竞对价格（付费计划 — /hotel 端点，15+ 供应商）
-    流程：
-      1. 获取城市代表性酒店 ID（预设 / /mapping 动态获取）
-      2. 为每家酒店调用 /hotel 端点
-      3. 聚合所有供应商价格，输出价格分布统计
-    """
-    api_key = os.getenv("MAKCORPS_API_KEY", "")
-    if not api_key or "your_" in api_key:
-        return None
-
-    headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
-    hotel_ids = _makcorps_hotel_ids(city, api_key)
-    if not hotel_ids:
-        return None
-
-    all_prices: list[float] = []
-    hotels_queried = 0
-    hotel_benchmarks = []
-
-    for hid in hotel_ids:
-        url = (f"https://api.makcorps.com/hotel"
-               f"?hotelid={hid}&rooms=1&adults=2"
-               f"&checkin={checkin}&checkout={checkout}"
-               f"&cur=USD&api_key={api_key}")
-        try:
-            req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=12) as r:
-                data = json.loads(r.read())
-
-            # 配额检测
-            if isinstance(data, dict):
-                msg = data.get("message", "")
-                if "Limit" in msg or "quota" in msg.lower():
-                    break
-
-            comp = data.get("comparison", [])
-            hotel_prices = _parse_makcorps_comparison(comp)
-            if hotel_prices:
-                all_prices.extend(hotel_prices)
-                hotels_queried += 1
-                hotel_benchmarks.append({
-                    "hotel_id":    hid,
-                    "min_price":   round(min(hotel_prices), 2),
-                    "avg_price":   round(sum(hotel_prices)/len(hotel_prices), 2),
-                    "vendors_cnt": len(hotel_prices),
-                })
-        except Exception:
-            continue
-
-    if not all_prices:
-        return None
-
-    ps = sorted(all_prices)
-    n  = len(ps)
-    return {
-        "city":            city,
-        "checkin":         checkin,
-        "checkout":        checkout,
-        "hotels_queried":  hotels_queried,
-        "vendors_sampled": n,
-        "min_price_usd":   round(ps[0],    2),
-        "p25_price_usd":   round(ps[n//4], 2),
-        "median_price_usd":round(ps[n//2], 2),
-        "p75_price_usd":   round(ps[3*n//4],2),
-        "avg_price_usd":   round(sum(ps)/n, 2),
-        "max_price_usd":   round(ps[-1],   2),
-        "hotel_benchmarks": hotel_benchmarks,
-        "currency":        "USD",
-        "endpoint":        "/hotel",
-        "plan":            "paid",
-    }
-
-
-# ══════════════════════════════════════════════════════════════════════
-#  数据源 3: Google Trends — 搜索量趋势（带限速保护）
+#  数据源 2: Google Trends — 搜索量趋势（带限速保护）
 # ══════════════════════════════════════════════════════════════════════
 
 def _google_trends_signal(location: str) -> dict | None:
@@ -421,16 +257,7 @@ def _aggregate_signals(location: str, days_ahead: int) -> dict:
     else:
         sources.append("Amadeus✗")
 
-    # 2. MakCorps
-    mc = _makcorps_prices(location, checkin, checkout)
-    if mc and "error" not in str(mc):
-        signals["makcorps"] = mc
-        sources.append("MakCorps✓")
-    else:
-        quota_msg = "（额度耗尽，需升级）" if mc and "quota" in str(mc) else "（未配置）"
-        sources.append(f"MakCorps✗{quota_msg}")
-
-    # 3. Google Trends
+    # 2. Google Trends
     gt = _google_trends_signal(location)
     if gt:
         signals["google_trends"] = gt
@@ -440,7 +267,7 @@ def _aggregate_signals(location: str, days_ahead: int) -> dict:
     else:
         sources.append("GoogleTrends✗(限速)")
 
-    # 4. 内置信号（始终可用）
+    # 3. 内置信号（始终可用）
     builtin = _builtin_signal(location, days_ahead)
     signals["builtin"] = builtin
     scores.append(builtin["builtin_score"])
@@ -482,13 +309,13 @@ if _CREWAI_OK:
     class OTASignalTool(BaseTool):
         """
         OTA 预订前兆信号聚合工具。
-        整合 Amadeus / MakCorps / Google Trends / 内置规则，
+        整合 Amadeus / Google Trends / 内置规则，
         生成综合需求意图分数，比当日数据提前 7-21 天捕捉信号。
         """
         name: str = "ota_signal"
         description: str = (
             "聚合多个 OTA 平台的预订前兆信号，预测未来酒店需求。\n"
-            "数据源：Amadeus（酒店搜索量/价格）+ MakCorps（竞对价格）"
+            "数据源：Amadeus（酒店搜索量/价格）"
             "+ Google Trends（搜索意图）+ 季节规则\n"
             "适合场景：\n"
             "- 距入住还有 7-21 天，判断需求是否会激增\n"
@@ -546,10 +373,6 @@ if _CREWAI_OK:
                     f"趋势: {trend_arrow} {gt['trend_pct']:+.1f}%",
                     "",
                 ]
-
-            # MakCorps
-            if "makcorps" in signals and output_detail == "full":
-                lines += ["💰 MakCorps 竞对数据：已获取（详见 full 模式）", ""]
 
             # 内置信号
             builtin = signals.get("builtin", {})

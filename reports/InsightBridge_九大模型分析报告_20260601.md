@@ -196,7 +196,6 @@
 | P2-A | 弹性引擎3★/4★价格偏高 | ✅ 已修复 | 弹性系数+上限双调优 ✅ |
 | DSEC-1 | 弹性引擎OTA混合价基准 | ✅ 已修复 | 切换至星级专属ADR ✅ |
 | DSEC-2 | build_payload()OTA参考混用 | ✅ 已修复 | 按hotel["star"]查DSEC ADR ✅ |
-| S-4 | MakCorps过期API数据混入 | ✅ 已修复 | makcorps_disabled排除 ✅ |
 | S-5 | dsec_market_occ未加入权重 | ✅ 已修复 | 权重0.07已加入 ✅ |
 | S-3 | booking_prices_23键名错误 | ✅ 已修复 | 3★OTA参考从1000→实际值 ✅ |
 

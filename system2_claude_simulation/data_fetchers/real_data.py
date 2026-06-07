@@ -1,17 +1,19 @@
 """
 澳门酒店AI模型 — 真实数据抓取模块
 =====================================
-经过实际测试，以下数据源可成功抓取：
+经过稳定性重构后，默认优先级如下：
 
-✅ 可以抓取（真实数据）:
-  - Booking.com 3星房价 / 竞对价格     (Playwright, Cloudflare可绕过)
-  - Booking.com 4-5星房价 (upper_tier_adr) (Playwright)
+✅ 默认主链（稳定优先）:
+  - Booking.com 价格 → 本地 price_snapshots / Firecrawl / DSEC 冷启动
   - TurboJET渡轮满座率 → flight_ferry信号  (requests, 无防护)
-  - 澳门天气                              (wttr.in, 已实现)
-  - 假日/周末                             (日历, 已实现)
-  - 澳门旅游局活动数量                     (Playwright, 部分)
+  - 澳门天气 → Open-Meteo
+  - 假日/周末 → 日历
+  - 澳门旅游局活动数量 → Firecrawl / 本地 IR 活动缓存
 
-❌ 无法通过任何爬虫获取（买MakCorps才能有）:
+⚠️ 可选备用链（默认关闭）:
+  - 本机 Playwright 抓 Booking.com / MGTO 页面
+
+❌ 无法稳定通过公开网页直接获取:
   - ota_booking_pace   (OTA内部数据，从不公开)
   - border_flow 实时   (DSEC只出月报，无实时API)
   - zhuhai_saturation  (无任何商业来源)
@@ -25,6 +27,7 @@ import json
 import os
 import re
 import sqlite3
+import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -39,12 +42,19 @@ load_dotenv(Path(__file__).parent.parent.parent / ".env")
 logger = logging.getLogger(__name__)
 
 CACHE_DB = Path(__file__).parent.parent / "data_cache.db"
+REAL_DB_PATH = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/hotel_collector/hotel_real_data.db")
+COLLECTOR_DIR = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/hotel_collector")
+if str(COLLECTOR_DIR) not in sys.path:
+    sys.path.insert(0, str(COLLECTOR_DIR))
 
 # ── Shifter 代理配置（绕过 Cloudflare / Booking.com 机器人检测）────────────────
 _SHIFTER_HOST = "p.shifter.io"
 _SHIFTER_PORT = 443
 _SHIFTER_USER = os.getenv("SHIFTER_USER", "")
 _SHIFTER_PASS = os.getenv("SHIFTER_PASS", "")
+_LOCAL_PLAYWRIGHT_FALLBACK = os.getenv("ENABLE_LOCAL_PLAYWRIGHT_FALLBACK", "").strip().lower() in {
+    "1", "true", "yes", "on"
+}
 
 def _shifter_proxy_cfg() -> dict | None:
     """返回 Playwright proxy 配置字典；未配置 Shifter 时返回 None（降级到无代理）"""
@@ -89,36 +99,30 @@ def _set_cache(key: str, value: dict):
         pass
 
 
-# ── 天气（wttr.in，已验证可用）───────────────────────────────────────────────
+# ── 天气（Open-Meteo，稳定API）───────────────────────────────────────────────
 def fetch_weather() -> float:
     """返回澳门当前气温（摄氏度），失败返回25.0"""
     cached = _get_cache("weather_macau")
     if cached:
         return cached["celsius"]
     try:
-        # 方案1: wttr.in JSON格式
         r = requests.get(
-            "https://wttr.in/Macau?format=j1",
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude": 22.1987,
+                "longitude": 113.5439,
+                "current": "temperature_2m",
+                "timezone": "Asia/Macau",
+            },
             timeout=8,
             headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"},
         )
-        if r.status_code == 200 and r.text.strip().startswith("{"):
-            celsius = float(r.json()["current_condition"][0]["temp_C"])
+        if r.status_code == 200:
+            payload = r.json()
+            current = payload.get("current") or {}
+            celsius = float(current["temperature_2m"])
             _set_cache("weather_macau", {"celsius": celsius})
             return celsius
-    except Exception:
-        pass
-    try:
-        # 方案2: wttr.in 简单文本格式 "25"
-        r2 = requests.get(
-            "https://wttr.in/Macau?format=%t",
-            timeout=8,
-            headers={"User-Agent": "Mozilla/5.0"},
-        )
-        temp_str = r2.text.strip().replace("°C", "").replace("+", "").strip()
-        celsius = float(temp_str)
-        _set_cache("weather_macau", {"celsius": celsius})
-        return celsius
     except Exception as e:
         logger.warning(f"Weather fetch failed: {e}")
         return 25.0
@@ -209,27 +213,109 @@ def fetch_ferry_signal() -> float:
     return signal
 
 
-# ── Booking.com实时价格（Playwright，已验证可用）──────────────────────────
-def fetch_booking_prices(checkin: str, checkout: str) -> dict:
-    """
-    用Playwright抓取Booking.com澳门酒店实时价格。
+def _parse_mop_prices(text: str, min_price: int, max_price: int) -> list[int]:
+    raw = re.findall(r"MOP[\s\xa0]*([\d,]+)", text)
+    return sorted(set(int(p.replace(",", "")) for p in raw if min_price < int(p.replace(",", "")) < max_price))
 
-    返回:
-    {
-        "prices_3star": [550, 945, ...],   # MOP, 3星
-        "prices_45star": [1200, 1800, ...], # MOP, 4-5星
-        "count_3star": 14,                  # 可售房源数量
-        "avg_3star": 748.0,                 # 均价
-        "avg_45star": 1450.0,                # 上层均价
-        "min_3star": 550,                   # 最低价（竞对压力）
-        "source": "booking.com",
-        "fetched_at": "2026-05-05 16:00:00"
+
+def _dsec_booking_fallback(checkin: str, source: str) -> dict:
+    month = datetime.fromisoformat(checkin).month
+    try:
+        from dsec_loader import get_market_adr as _get_market_adr
+        star3 = float(_get_market_adr(month, 3) or 900.0)
+        star4 = float(_get_market_adr(month, 4) or 1050.0)
+        star5 = float(_get_market_adr(month, 5) or 1450.0)
+    except Exception:
+        star3, star4, star5 = 900.0, 1050.0, 1450.0
+
+    prices_3 = [round(star3 * x) for x in (0.92, 1.00, 1.07)]
+    prices_45 = [round(star4 * 0.98), round(star4 * 1.05), round(star5 * 0.95), round(star5 * 1.04)]
+    return {
+        "prices_3star": prices_3,
+        "prices_45star": prices_45,
+        "count_3star": len(prices_3),
+        "avg_3star": round(sum(prices_3) / len(prices_3), 1),
+        "avg_45star": round(sum(prices_45) / len(prices_45), 1),
+        "min_3star": min(prices_3),
+        "max_3star": max(prices_3),
+        "source": source,
+        "fetched_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
-    """
+
+
+def _booking_prices_from_local_db(checkin: str) -> dict | None:
+    if not REAL_DB_PATH.exists():
+        return None
+    try:
+        conn = sqlite3.connect(str(REAL_DB_PATH), timeout=5)
+        rows = conn.execute("""
+            SELECT booking_rate, star
+            FROM price_snapshots
+            WHERE checkin_date = ?
+              AND snapshot_time >= datetime('now', '-7 days')
+              AND booking_rate > 200
+        """, (checkin,)).fetchall()
+        conn.close()
+
+        prices_3 = sorted(int(row[0]) for row in rows if row[1] == 3 and row[0])
+        prices_45 = sorted(int(row[0]) for row in rows if row[1] in (4, 5) and row[0])
+        if not prices_3 and not prices_45:
+            return None
+
+        count_3 = len(prices_3)
+        return {
+            "prices_3star": prices_3,
+            "prices_45star": prices_45,
+            "count_3star": count_3,
+            "avg_3star": round(sum(prices_3) / len(prices_3), 1) if prices_3 else 0,
+            "avg_45star": round(sum(prices_45) / len(prices_45), 1) if prices_45 else 0,
+            "min_3star": min(prices_3) if prices_3 else 0,
+            "max_3star": max(prices_3) if prices_3 else 0,
+            "source": "price_snapshots_recent",
+            "fetched_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+    except Exception as e:
+        logger.debug(f"Local booking snapshot read failed: {e}")
+        return None
+
+
+def _booking_prices_from_firecrawl(checkin: str, checkout: str) -> dict | None:
+    url_3 = (
+        f"https://www.booking.com/searchresults.html?ss=Macau"
+        f"&checkin={checkin}&checkout={checkout}"
+        f"&nflt=class%3D3&lang=zh-hk&selected_currency=MOP"
+    )
+    html_3 = _firecrawl_scrape(url_3)
+    prices_3 = _parse_mop_prices(html_3, 100, 3000) if html_3 else []
+
+    url_45 = (
+        f"https://www.booking.com/searchresults.html?ss=Macau"
+        f"&checkin={checkin}&checkout={checkout}"
+        f"&nflt=class%3D4%3Bclass%3D5&lang=zh-hk&selected_currency=MOP"
+    )
+    html_45 = _firecrawl_scrape(url_45)
+    prices_45 = _parse_mop_prices(html_45, 200, 15000) if html_45 else []
+
+    if not prices_3 and not prices_45:
+        return None
+
+    count_match = re.findall(r"(\d+)\s*(?:properties?|酒店)\s*found", html_3 or "", re.I)
+    count_3 = int(count_match[0]) if count_match else len(prices_3)
+    return {
+        "prices_3star": prices_3,
+        "prices_45star": prices_45,
+        "count_3star": count_3,
+        "avg_3star": round(sum(prices_3) / len(prices_3), 1) if prices_3 else 0,
+        "avg_45star": round(sum(prices_45) / len(prices_45), 1) if prices_45 else 0,
+        "min_3star": min(prices_3) if prices_3 else 0,
+        "max_3star": max(prices_3) if prices_3 else 0,
+        "source": "booking_firecrawl",
+        "fetched_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+def _booking_prices_from_playwright(checkin: str, checkout: str) -> dict:
     cache_key = f"booking_{checkin}_{checkout}"
-    cached = _get_cache(cache_key)
-    if cached:
-        return cached
 
     try:
         from playwright.sync_api import sync_playwright
@@ -256,10 +342,6 @@ def fetch_booking_prices(checkin: str, checkout: str) -> dict:
                 },
             )
             page = ctx.new_page()
-
-            def _parse_mop_prices(html: str, min_price=100, max_price=20000) -> list[int]:
-                raw = re.findall(r"MOP[\s\xa0]*([\d,]+)", html)
-                return sorted(set(int(p.replace(",", "")) for p in raw if min_price < int(p.replace(",", "")) < max_price))
 
             # 3星（selected_currency=MOP 确保返回澳门元）
             url_3 = (
@@ -305,26 +387,50 @@ def fetch_booking_prices(checkin: str, checkout: str) -> dict:
 
     except Exception as e:
         logger.warning(f"Booking.com scrape failed: {e}")
-        return {
-            "prices_3star": [], "prices_45star": [],
-            "count_3star": 0, "avg_3star": 0, "avg_45star": 0,
-            "min_3star": 0, "max_3star": 0,
-            "source": "booking.com_failed",
-            "fetched_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        }
+        return _dsec_booking_fallback(checkin, "booking_playwright_failed")
 
 
-# ── 澳门旅游局活动信号（Playwright）──────────────────────────────────────
-def fetch_event_signal() -> float:
+# ── Booking.com实时价格（默认不走本机Playwright）──────────────────────────
+def fetch_booking_prices(checkin: str, checkout: str) -> dict:
     """
-    抓取澳门旅游局活动页面，评估本月活动密度。
+    默认优先级：
+      1. 本地 recent price_snapshots
+      2. Firecrawl 抓取 Booking 搜索页
+      3. DSEC 冷启动参考
+      4. 本机 Playwright（仅在 ENABLE_LOCAL_PLAYWRIGHT_FALLBACK=1 时启用）
+    """
+    cache_key = f"booking_{checkin}_{checkout}"
+    cached = _get_cache(cache_key)
+    if cached:
+        return cached
+
+    db_result = _booking_prices_from_local_db(checkin)
+    if db_result:
+        _set_cache(cache_key, db_result)
+        return db_result
+
+    fc_result = _booking_prices_from_firecrawl(checkin, checkout)
+    if fc_result:
+        _set_cache(cache_key, fc_result)
+        return fc_result
+
+    dsec_result = _dsec_booking_fallback(checkin, "booking_dsec_fallback")
+    if not _LOCAL_PLAYWRIGHT_FALLBACK:
+        _set_cache(cache_key, dsec_result)
+        return dsec_result
+
+    pw_result = _booking_prices_from_playwright(checkin, checkout)
+    _set_cache(cache_key, pw_result)
+    return pw_result
+
+
+# ── 澳门旅游局活动信号（默认不走本机Playwright）──────────────────────────────
+def _fetch_event_signal_playwright() -> float:
+    """
+    备用：抓取澳门旅游局活动页面，评估本月活动密度。
     返回 -1.0~1.0 信号，值越高代表活动越密集。
     """
     cache_key = f"macau_events_{datetime.now().strftime('%Y-%m')}"
-    cached = _get_cache(cache_key)
-    if cached:
-        return cached["signal"]
-
     try:
         from playwright.sync_api import sync_playwright
 
@@ -362,6 +468,36 @@ def fetch_event_signal() -> float:
         return 0.0
 
 
+def fetch_event_signal() -> float:
+    """
+    默认优先级：
+      1. 本地 IR 活动缓存
+      2. Firecrawl 澳门旅游局活动页
+      3. 本机 Playwright（仅在 ENABLE_LOCAL_PLAYWRIGHT_FALLBACK=1 时启用）
+      4. 中性值 0.0
+    """
+    cache_key = f"macau_events_{datetime.now().strftime('%Y-%m')}"
+    cached = _get_cache(cache_key)
+    if cached:
+        return cached["signal"]
+
+    ir_signal = _load_ir_event_signal_from_db()
+    if ir_signal is not None:
+        _set_cache(cache_key, {"signal": ir_signal, "source": "ir_event_cache"})
+        return ir_signal
+
+    fc_density, _fc_ticket, fc_source = fetch_firecrawl_event_density()
+    if fc_source not in ("fc_event_failed", "no_key"):
+        _set_cache(cache_key, {"signal": fc_density, "source": fc_source})
+        return fc_density
+
+    if _LOCAL_PLAYWRIGHT_FALLBACK:
+        return _fetch_event_signal_playwright()
+
+    _set_cache(cache_key, {"signal": 0.0, "source": "event_neutral_fallback"})
+    return 0.0
+
+
 # ── DSEC访客统计（月度编码，无实时接口）──────────────────────────────────
 def get_dsec_visitors_signal(month: int) -> float:
     """
@@ -390,7 +526,7 @@ def get_dsec_visitors_signal(month: int) -> float:
     return round((base - 0.5) * 2, 3)
 
 
-# ── IR 活动信号：从 makcorps_cache.db 读最新缓存（由 04_IR_Event_Calendar.py 写入）
+# ── IR 活动信号：从本地活动缓存读取最新结果（由 04_IR_Event_Calendar.py 写入）
 def _load_ir_event_signal_from_db() -> Optional[float]:
     """
     读取由 04_IR_Event_Calendar.py 写入的最新 IR 活动信号。
@@ -398,8 +534,16 @@ def _load_ir_event_signal_from_db() -> Optional[float]:
     若最近3天内有数据则返回信号值，否则返回 None（降级到旧爬虫）。
     """
     try:
-        db_path = Path(__file__).parent.parent / "makcorps_cache.db"
-        if not db_path.exists():
+        cache_dir = Path(__file__).parent.parent
+        db_candidates = [
+            cache_dir / "ir_event_cache.db",
+            cache_dir / "event_signal_cache.db",
+        ]
+        db_path = next((p for p in db_candidates if p.exists()), None)
+        if db_path is None:
+            legacy_hits = sorted(cache_dir.glob("*cache.db"))
+            db_path = legacy_hits[0] if legacy_hits else None
+        if db_path is None or not db_path.exists():
             return None
         conn = sqlite3.connect(db_path, timeout=5)
         # 取最近3天内的 IR 信号
@@ -516,7 +660,7 @@ def fetch_firecrawl_event_density() -> tuple:
     return 0.0, 0.0, "fc_event_failed"
 
 
-def get_all_real_signals(checkin: str, checkout: str) -> dict:
+def get_all_real_signals(checkin: str | None = None, checkout: str | None = None) -> dict:
     """
     统一接口：抓取所有可获得的真实数据，
     返回格式化为模型输入的信号字典。
@@ -524,13 +668,16 @@ def get_all_real_signals(checkin: str, checkout: str) -> dict:
     checkin/checkout: 'YYYY-MM-DD' 格式
     """
     now = datetime.now()
+    if not checkin:
+        checkin = (now + timedelta(days=7)).strftime("%Y-%m-%d")
+    if not checkout:
+        checkout = (datetime.fromisoformat(checkin) + timedelta(days=1)).strftime("%Y-%m-%d")
 
     # ── 真实数据 ──────────────────────────────────────────────────────────
     weather_c = fetch_weather()
     ferry = fetch_ferry_signal()
 
-    # ── IR 活动信号：优先读 makcorps_cache.db 中的最新缓存（由 04_IR_Event_Calendar.py 写入）
-    # 若缓存不存在，降级到旧的 MGTO 爬虫
+    # ── IR 活动信号：优先读本地活动缓存；其余逻辑交给 fetch_event_signal 走稳定链
     ir_signal = _load_ir_event_signal_from_db()
     if ir_signal is not None:
         events = ir_signal
@@ -539,9 +686,6 @@ def get_all_real_signals(checkin: str, checkout: str) -> dict:
 
     booking = fetch_booking_prices(checkin, checkout)
     visitors = get_dsec_visitors_signal(now.month)
-
-    # ── MakCorps OTA真实预订节奏（订阅已到期，停用）─────────────────────
-    mc = {"signal": None, "source": "makcorps_disabled"}
 
     # ── Firecrawl 新增因子（3个缺口全部补上）────────────────────────────
     fc_border, fc_border_src   = fetch_firecrawl_border_flow()
@@ -592,22 +736,16 @@ def get_all_real_signals(checkin: str, checkout: str) -> dict:
         "booking_prices_3": booking["prices_3star"],
         "booking_prices_45": booking["prices_45star"],
 
-        # ── MakCorps（已停用）────────────────────────────────────────
-        "makcorps_ota_pace":        mc.get("signal"),
-        "makcorps_ota_source":      mc.get("source", "no_key"),
-        "makcorps_avg_price_usd":   mc.get("avg_price_usd", 0.0),
-        "makcorps_premium_pct":     mc.get("avg_premium_pct", 0.0),
-
         "data_sources": {
-            "weather": "wttr.in (real-time)",
+            "weather": "Open-Meteo (real-time)",
             "flight_ferry": "TurboJET + CotaiWaterJet 双源 (real-time)",
-            "event_ticket_sales": f"Firecrawl({fc_event_src}) + IR活动日历",
+            "event_ticket_sales": f"IR活动缓存 / Firecrawl / optional Playwright ({fc_event_src})",
             "visitors_stats": "DSEC monthly report (encoded)",
-            "competitor_price": "Booking.com (real-time, Playwright+Shifter)",
-            "upper_tier_adr": "Booking.com (real-time, Playwright+Shifter)",
+            "competitor_price": "price_snapshots / Firecrawl / DSEC / optional Playwright",
+            "upper_tier_adr": "price_snapshots / Firecrawl / DSEC / optional Playwright",
             "border_flow": f"Firecrawl TDM新闻({fc_border_src})",
             "zhuhai_saturation": f"Firecrawl珠海搜索({fc_zhuhai_src})",
-            "ota_booking_pace": mc.get("source", "no_key"),
+            "ota_booking_pace": "scenario_or_local_fallback",
         },
     }
 

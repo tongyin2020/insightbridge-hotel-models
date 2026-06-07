@@ -377,8 +377,13 @@ def fetch_event_density_signal() -> dict:
 # ══════════════════════════════════════════════════════════════════════
 #  汇总入口 — 5个因子全部覆盖
 # ══════════════════════════════════════════════════════════════════════
-def get_all_firecrawl_signals(checkin: str, checkout: str) -> dict:
+def get_all_firecrawl_signals(checkin: str | None = None, checkout: str | None = None) -> dict:
     """整合所有Firecrawl抓取结果，返回可直接用于模型的信号字典。"""
+    now = datetime.now()
+    if not checkin:
+        checkin = (now + timedelta(days=7)).strftime("%Y-%m-%d")
+    if not checkout:
+        checkout = (datetime.fromisoformat(checkin) + timedelta(days=1)).strftime("%Y-%m-%d")
     print(f"  [FC] 抓取增强信号 {checkin}...", end=" ", flush=True)
 
     border = fetch_border_flow_signal()

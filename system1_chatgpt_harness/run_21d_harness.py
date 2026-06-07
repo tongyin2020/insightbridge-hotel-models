@@ -4,7 +4,7 @@
 This script is designed to run on the user's Mac from a Python terminal.
 It uses:
 - Firecrawl for public web signals
-- MakCorps for OTA market prices
+- DSEC plus locally collected OTA/BAR snapshots for market references
 - AgentOps for run monitoring
 - Direct Python subprocess calls into the two backend model kernels
 
@@ -251,10 +251,10 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
     w_ota = _DEMAND_OTA_W.get((seg, demand_level), w_ota)
     w_bar = 1.0 - w_ota
 
-    # ── 四层优先级定价参考（MakCorps已停用）────────────────────────────────
+    # ── 四层优先级定价参考 ────────────────────────────────────────────────
     # 层1：Shifter真实官网BAR → 85%BAR + 15%DSEC背景，再与OTA权重混合
     # 层2：Shifter真实OTA价折算BAR → 85%折算BAR + 15%DSEC，再与OTA权重混合
-    # 层3：冷启动 — DSEC统计局100%作为唯一历史参考（MakCorps已停用，不再混合fallback）
+    # 层3：冷启动 — DSEC统计局100%作为唯一历史参考
     # 层4：完全冷启动兜底（无任何真实数据）
     if real_bar_avg is not None:
         # 层1：有Shifter真实BAR — 85%真实BAR + 15%DSEC市场背景
@@ -268,7 +268,7 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
                           if dsec_adr_ref > 0 else ota_bar_est)
         base = w_bar * historical_ref + w_ota * ota_estimate
     elif dsec_adr_ref > 0:
-        # 层3：冷启动 — DSEC统计局为唯一历史参考，不与MakCorps fallback混合
+        # 层3：冷启动 — DSEC统计局为唯一历史参考
         base = dsec_adr_ref
     else:
         # 层4：完全冷启动兜底（无真实数据）
@@ -390,6 +390,9 @@ def mkdirp(path: Path) -> None:
 
 
 def init_agentops() -> None:
+    enabled = os.getenv("ENABLE_AGENTOPS", "").strip().lower()
+    if enabled not in {"1", "true", "yes", "on"}:
+        return
     key = os.getenv("AGENTOPS_API_KEY", "").strip()
     if not key:
         return
@@ -433,84 +436,18 @@ def score_event_markdown(markdown: str) -> tuple[float, float]:
     return round(event_density, 3), round(event_ticket_sales, 3)
 
 
-def makcorps_market_snapshot() -> tuple[bool, dict[str, float], float, float]:
-    """
-    查询 MakCorps 多OTA价格对比。
-    ⚠️ MakCorps订阅已到期/即将到期，停止API调用，直接返回fallback。
-    fallback价格来自澳门DSEC统计局历史均价（已在build_external_snapshot中处理）。
-    """
-    # MakCorps订阅到期，不再调用API — fallback由 build_external_snapshot 处理
-    return False, {}, 0.0, 0.0
-
-    # ── 以下代码保留备用，如恢复订阅可删除上方 return ──────────────────
-    key = os.getenv("MAKCORPS_API_KEY", "").strip()
-    if not key:
-        return False, {}, 0.0, 0.0
-
-    # 动态日期：明天 check-in，后天 check-out（每次运行都是最新价格）
-    tomorrow  = (datetime.now(UTC) + timedelta(days=1)).strftime("%Y-%m-%d")
-    day_after = (datetime.now(UTC) + timedelta(days=2)).strftime("%Y-%m-%d")
-    checkin   = os.getenv("CHECKIN_DATE",  tomorrow)
-    checkout  = os.getenv("CHECKOUT_DATE", day_after)
-    currency  = "USD"   # 固定USD — MakCorps HKD/MOP格式("HK$773")无法解析；USD由后续代码转换为MOP
-
-    # 澳门代表性酒店 — 覆盖3~5星，跨区域
-    SAMPLE_HOTELS = ["8331360", "664580", "306251", "7810592", "7807481", "2091060"]
-
-    try:
-        all_prices: list[float] = []
-        ota_prices: dict[str, float] = {}
-
-        for hotel_id in SAMPLE_HOTELS:
-            try:
-                hotel_resp = requests.get(
-                    "https://api.makcorps.com/hotel",
-                    params={"api_key": key, "hotelid": hotel_id, "cur": currency,
-                            "rooms": 1, "adults": 2, "checkin": checkin, "checkout": checkout},
-                    timeout=15,
-                )
-                if hotel_resp.status_code != 200:
-                    continue
-                payload = hotel_resp.json()
-                flat = [item for block in payload.get("comparison", [])
-                        if isinstance(block, list) for item in block
-                        if isinstance(item, dict)]
-                for item in flat:
-                    for idx in range(1, 20):   # vendor1~19（含 Agoda=8, Trip.com=9）
-                        vendor = item.get(f"vendor{idx}", "")
-                        price  = item.get(f"price{idx}", "")
-                        if not vendor or price is None:
-                            continue
-                        try:
-                            # 兼容 "$91" / "HK$773" / "MOP 734" 等多种货币格式
-                            import re as _re
-                            clean = _re.sub(r'[^\d.]', '', str(price))
-                            numeric = float(clean)
-                            if numeric > 0:
-                                key_name = str(vendor).lower().replace(".", "_")
-                                ota_prices[key_name] = round(
-                                    (ota_prices.get(key_name, numeric) + numeric) / 2, 2
-                                )
-                                all_prices.append(numeric)
-                        except ValueError:
-                            continue
-            except Exception:
-                continue
-
-        if not all_prices:
-            return False, {}, 0.0, 0.0
-
-        competitor_price = min(all_prices)
-        upper_tier_adr   = max(all_prices)
-        return True, ota_prices, round(competitor_price, 2), round(upper_tier_adr, 2)
-    except Exception:
-        return False, {}, 0.0, 0.0
+def local_market_snapshot() -> tuple[dict[str, float], float, float]:
+    """返回本地市场价格兜底，不再依赖任何外部 OTA 价格 API。"""
+    ota_prices = {"booking_com": 1136.0, "trip_com": 1160.0, "agoda": 1120.0}
+    competitor_price = 1120.0
+    upper_tier_adr = 1304.0
+    return ota_prices, competitor_price, upper_tier_adr
 
 
 def build_external_snapshot(ts: datetime) -> ExternalSnapshot:
     event_ok, markdown = firecrawl_event_snapshot()
     event_density, event_ticket_sales = score_event_markdown(markdown)
-    market_ok, ota_prices, competitor_price, upper_tier_adr = makcorps_market_snapshot()
+    ota_prices, competitor_price, upper_tier_adr = local_market_snapshot()
 
     weekend = 1.0 if ts.weekday() >= 5 else 0.0
     holiday = 0.7 if event_density >= 0.45 else 0.1
@@ -521,19 +458,6 @@ def build_external_snapshot(ts: datetime) -> ExternalSnapshot:
     border_flow = round(min(1.0, 0.35 + weekend * 0.15 + event_density * 0.3), 3)
     flight_ferry = round(min(1.0, 0.25 + event_density * 0.35), 3)
     weather = 0.0
-
-    if not market_ok:
-        # 澳门4-5星酒店MOP均价 fallback（换算自USD×8：$142→1136, $163→1304）
-        ota_prices = {"booking_com": 1136.0, "trip_com": 1160.0, "agoda": 1120.0}
-        competitor_price = 1120.0   # MOP
-        upper_tier_adr  = 1304.0   # MOP
-
-    # MakCorps返回USD时转换为MOP（Director模型期望MOP；1 USD ≈ 8.06 MOP）
-    if market_ok and competitor_price < 500:   # 500以下认为是USD价格
-        USD_TO_MOP = 8.06
-        competitor_price = round(competitor_price * USD_TO_MOP, 1)
-        upper_tier_adr   = round(upper_tier_adr   * USD_TO_MOP, 1)
-        ota_prices = {k: round(v * USD_TO_MOP, 1) for k, v in ota_prices.items()}
 
     # ── DSEC 澳门统计局市场数据 ──────────────────────────────────────────────
     # 按当前月份读取3/4/5★市场入住率和ADR（用最近3年2023-2025均值）
@@ -575,7 +499,7 @@ def build_external_snapshot(ts: datetime) -> ExternalSnapshot:
         upper_tier_adr=upper_tier_adr,
         ota_prices=ota_prices,
         raw_event_source_ok=event_ok,
-        raw_market_source_ok=market_ok,
+        raw_market_source_ok=False,
         dsec_market_occ=dsec_market_occ,
         dsec_demand_signal=dsec_demand_signal,
         dsec_cold_adr=dsec_cold_adr,

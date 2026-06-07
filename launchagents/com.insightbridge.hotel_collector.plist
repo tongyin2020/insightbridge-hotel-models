@@ -12,10 +12,10 @@
     <string>/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/hotel_collector/hotel_data_collector.py</string>
   </array>
 
-  <!-- 每天 09:00 跑一次（抓不到就算，8秒超时快速跳过）-->
+  <!-- 每天 08:00 跑一次，确保 09:00 日报读取到当日新鲜采集 -->
   <key>StartCalendarInterval</key>
   <dict>
-    <key>Hour</key><integer>9</integer>
+    <key>Hour</key><integer>8</integer>
     <key>Minute</key><integer>0</integer>
   </dict>
 

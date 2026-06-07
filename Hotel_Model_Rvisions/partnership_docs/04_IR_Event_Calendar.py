@@ -508,8 +508,8 @@ def fetch_ir_event_signal(window_days: int = 7, force: bool = False) -> dict:
 
 
 def _export_event_signal_to_db(result: dict, date_str: str):
-    """写入 makcorps_cache.db，供模拟模型读取"""
-    db_path = Path(__file__).parent.parent / "simulation_test" / "makcorps_cache.db"
+    """写入本地事件信号缓存，供模拟模型读取"""
+    db_path = Path(__file__).parent.parent / "simulation_test" / "event_signal_cache.db"
     if not db_path.exists():
         return
     signal_data = {

@@ -3,33 +3,35 @@
 InsightBridge AI 模型每日报告
 ============================
 每天 09:00 由 launchd 触发，汇总三套系统、9个AI模型运行状态与KPI，
-通过企业微信机器人推送一次。
+保存到桌面项目，并推送到 Telegram。
 
 手动测试：
   python3 /Users/tongyin/Desktop/InsightBridge_九大模型_v2026/daily_report.py
 """
 
 from __future__ import annotations
-import sys, json, sqlite3, subprocess
+import json
+import os
+import sqlite3
+import subprocess
+import sys
 from pathlib import Path
 from datetime import datetime
 
 # ── 路径配置 ──────────────────────────────────────────────────────────────
-WECOM_PY     = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/Hotel_Model_Rvisions/wecom_push.py")
+BASE_DIR     = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026")
 SYS2_DB      = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/system2_claude_simulation/results.db")
 SYS3_DB      = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/system3_crewai/crewai_results.db")
 SYS1_OUTDIR  = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/hotel_model_staging_output")
 COLLECTOR_DB = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/hotel_collector/hotel_real_data.db")
+REPORT_DIR   = BASE_DIR / "reports" / "daily_model_reports"
+LATEST_REPORT = BASE_DIR / "reports" / "latest_ai_model_daily_report.md"
+TG_OWNER_FILE = Path.home() / "telegram_bot" / "owner_chat_id.txt"
 
 TODAY = datetime.now().strftime("%Y-%m-%d")
 NOW   = datetime.now().strftime("%Y-%m-%d %H:%M")
 
 # ── 工具函数 ──────────────────────────────────────────────────────────────
-def push(msg: str):
-    sys.path.insert(0, str(WECOM_PY.parent))
-    from wecom_push import push_markdown
-    push_markdown(msg)
-
 def _pct(a, b) -> str:
     return f"{a/b*100:.1f}%" if b and b > 0 else "N/A"
 
@@ -58,12 +60,202 @@ def _db(path: Path):
 def _avg(lst):
     return sum(lst) / len(lst) if lst else None
 
+def _save_report(report: str) -> Path:
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    saved_path = REPORT_DIR / f"ai_model_daily_report_{stamp}.md"
+    saved_path.write_text(report, encoding="utf-8")
+    LATEST_REPORT.write_text(report, encoding="utf-8")
+    return saved_path
+
+def _load_telegram_chat_id() -> str | None:
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+    if chat_id:
+        return chat_id
+    try:
+        text = TG_OWNER_FILE.read_text(encoding="utf-8").strip()
+        return text or None
+    except Exception:
+        return None
+
+def _telegram_send_text(text: str) -> bool:
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    chat_id = _load_telegram_chat_id()
+    if not token or not chat_id:
+        print("⚠️ Telegram 未配置完整，跳过文本推送")
+        return False
+    try:
+        result = subprocess.run(
+            [
+                "/usr/bin/curl",
+                "-sS",
+                "-X", "POST",
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                "-d", f"chat_id={chat_id}",
+                "-d", f"text={text}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        return result.returncode == 0 and '"ok":true' in result.stdout
+    except Exception as exc:
+        print(f"⚠️ Telegram 文本推送异常: {exc}")
+        return False
+
+def _telegram_send_document(path: Path) -> bool:
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    chat_id = _load_telegram_chat_id()
+    if not token or not chat_id:
+        print("⚠️ Telegram 未配置完整，跳过附件推送")
+        return False
+    try:
+        result = subprocess.run(
+            [
+                "/usr/bin/curl",
+                "-sS",
+                "-X", "POST",
+                f"https://api.telegram.org/bot{token}/sendDocument",
+                "-F", f"chat_id={chat_id}",
+                "-F", f"document=@{path}",
+                "-F", f"caption=InsightBridge AI 模型日报 {TODAY}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        return result.returncode == 0 and '"ok":true' in result.stdout
+    except Exception as exc:
+        print(f"⚠️ Telegram 附件推送异常: {exc}")
+        return False
+
+def _build_telegram_brief(saved_path: Path) -> str:
+    headline = _headline_section()
+    brief_lines = []
+    for raw_line in headline.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("###"):
+            continue
+        if line.startswith("- "):
+            line = line[2:]
+        brief_lines.append(line)
+    brief_lines.append(f"完整报告已保存：{saved_path}")
+    return "\n".join([
+        f"🏨 InsightBridge AI 模型日报",
+        NOW,
+        "",
+        *brief_lines,
+    ])
+
 def _days_since(ts_str: str) -> str:
     try:
         fd = datetime.fromisoformat(ts_str[:19])
         return str((datetime.now() - fd).days + 1)
     except Exception:
         return "?"
+
+def _hourly_group_stats(conn, since_expr: str | None = None) -> dict[str, tuple]:
+    where = f"WHERE run_at >= datetime('now','{since_expr}')" if since_expr else ""
+    rows = conn.execute(f"""
+        WITH dedup AS (
+            SELECT *
+            FROM hourly_runs
+            WHERE id IN (
+                SELECT MAX(id)
+                FROM hourly_runs
+                {where}
+                GROUP BY sim_hour, hotel_id, model_type
+            )
+        )
+        SELECT
+          CASE
+            WHEN model_type LIKE 'MARE%'     THEN 'MARE'
+            WHEN model_type LIKE 'DIRECTOR%' THEN 'DIRECTOR'
+            WHEN model_type LIKE 'SELFACQ%'  THEN 'SELFACQ'
+            ELSE model_type
+          END as grp,
+          COUNT(*),
+          AVG(rec_price),
+          SUM(CASE WHEN anomaly LIKE '%EXCEPTION%' THEN 1 ELSE 0 END),
+          SUM(CASE WHEN anomaly IS NOT NULL AND trim(anomaly) != '' THEN 1 ELSE 0 END),
+          AVG(CASE WHEN exp_lift IS NOT NULL AND exp_lift != '' THEN
+              CAST(REPLACE(REPLACE(exp_lift,'%',''),' ','') AS REAL) ELSE NULL END)
+        FROM dedup
+        GROUP BY grp
+    """).fetchall()
+    return {r[0]: r for r in rows}
+
+def _collector_freshness() -> dict:
+    conn = _db(COLLECTOR_DB)
+    if not conn:
+        return {"status": "unknown", "line": "采集库不可用"}
+    last_row = conn.execute("""
+        SELECT MAX(snapshot_time), COUNT(*), SUM(source_ok)
+        FROM price_snapshots
+        WHERE snapshot_time >= datetime('now','-24 hours')
+    """).fetchone() or (None, 0, 0)
+    latest_any = conn.execute("""
+        SELECT MAX(snapshot_time) FROM price_snapshots
+    """).fetchone()
+    conn.close()
+
+    last_24h, cnt_24h, ok_24h = last_row[0], last_row[1] or 0, last_row[2] or 0
+    latest_any = latest_any[0] if latest_any else None
+    if cnt_24h > 0:
+        return {
+            "status": "fresh",
+            "line": f"采集新鲜：近24h {cnt_24h} 条，成功率 {_pct(ok_24h, cnt_24h)}，最近 {last_24h}",
+        }
+    if latest_any:
+        return {
+            "status": "stale",
+            "line": f"采集过期：近24h 0 条，最近一次 {latest_any}",
+        }
+    return {"status": "empty", "line": "采集为空：price_snapshots 暂无记录"}
+
+def _headline_section() -> str:
+    freshness = _collector_freshness()
+
+    s2 = _db(SYS2_DB)
+    s3 = _db(SYS3_DB)
+    s2_24 = _hourly_group_stats(s2, "-24 hours") if s2 else {}
+    s3_24 = _hourly_group_stats(s3, "-24 hours") if s3 else {}
+    if s2:
+        s2.close()
+    if s3:
+        s3.close()
+
+    def _pick(d: dict, key: str):
+        return d.get(key, (key, 0, None, 0, 0, None))
+
+    s2_m, s2_d, s2_a = _pick(s2_24, "MARE"), _pick(s2_24, "DIRECTOR"), _pick(s2_24, "SELFACQ")
+    s3_m, s3_d, s3_a = _pick(s3_24, "MARE"), _pick(s3_24, "DIRECTOR"), _pick(s3_24, "SELFACQ")
+
+    failure_lines = [
+        f"S2 MARE { _pct(s2_m[3], s2_m[1]) } / CRM { _pct(s2_d[3], s2_d[1]) } / SelfACQ { _pct(s2_a[3], s2_a[1]) }",
+        f"S3 MARE { _pct(s3_m[3], s3_m[1]) } / CRM { _pct(s3_d[3], s3_d[1]) } / SelfACQ { _pct(s3_a[3], s3_a[1]) }",
+    ]
+    anomaly_lines = [
+        f"S2 MARE { _pct(s2_m[4], s2_m[1]) } / CRM { _pct(s2_d[4], s2_d[1]) } / SelfACQ { _pct(s2_a[4], s2_a[1]) }",
+        f"S3 MARE { _pct(s3_m[4], s3_m[1]) } / CRM { _pct(s3_d[4], s3_d[1]) } / SelfACQ { _pct(s3_a[4], s3_a[1]) }",
+    ]
+
+    avg_lifts = [x[5] for x in (s2_m, s3_m, s2_d, s3_d) if x[5] is not None]
+    lift_line = f"收益信号：近24h 可见 uplift 均值约 {sum(avg_lifts)/len(avg_lifts):.1f}%" if avg_lifts else "收益信号：近24h uplift 样本不足"
+
+    freshness_icon = "✅" if freshness["status"] == "fresh" else ("⚠️" if freshness["status"] == "stale" else "🔴")
+    return "\n".join([
+        "### 🧭 今日结论",
+        "",
+        f"- {freshness_icon} {freshness['line']}",
+        f"- 程序失败率：{failure_lines[0]}；{failure_lines[1]}",
+        f"- 异常率：{anomaly_lines[0]}；{anomaly_lines[1]}",
+        f"- {lift_line}",
+        "- 口径说明：失败率只算 EXCEPTION；异常率包含护栏和压力测试告警。",
+        "",
+    ])
 
 def _real_market_avgs() -> tuple:
     """
@@ -73,7 +265,6 @@ def _real_market_avgs() -> tuple:
 
     数据优先级：
       1. price_snapshots.official_bar（官网BAR，最权威）
-      2. makcorps_snapshots.min_ota_price（OTA最低价，用于弥补官网数据不足的星级）
     """
     conn = _db(COLLECTOR_DB)
     low_avg = high_avg = None
@@ -88,45 +279,21 @@ def _real_market_avgs() -> tuple:
         """).fetchall()
         rm = {r[0]: (r[1], r[2]) for r in rows}
 
-        # ── OTA价格（makcorps_snapshots，弥补官网数据不足）
-        # star=3/4 → low market; star=5 → high market
-        try:
-            mkc_rows = conn.execute("""
-                SELECT star, AVG(min_ota_price), COUNT(*)
-                FROM makcorps_snapshots
-                WHERE api_ok=1 AND min_ota_price > 100
-                  AND snapshot_time >= datetime('now','-7 days')
-                GROUP BY star
-            """).fetchall()
-            mkc_by_star = {r[0]: (r[1], r[2]) for r in mkc_rows}
-        except Exception:
-            mkc_by_star = {}
-
-        # 3-4★市场：加权平均官网BAR；若某星级官网数据不足，补充OTA均价
+        # 3-4★市场：仅使用官网BAR加权平均
         low_vals, low_cnts = [], []
         for t in ("3_star", "4_star"):
-            star_int = int(t[0])
             if t in rm and rm[t][0] and rm[t][1] >= 3:      # 至少3条官网记录才用
                 low_vals.append(rm[t][0] * rm[t][1])
                 low_cnts.append(rm[t][1])
-            elif star_int in mkc_by_star and mkc_by_star[star_int][0]:
-                mkt_p, mkt_c = mkc_by_star[star_int]
-                low_vals.append(mkt_p * mkt_c)
-                low_cnts.append(mkt_c)
         if low_cnts:
             low_avg = sum(low_vals) / sum(low_cnts)
 
-        # 5★豪华市场：加权平均官网BAR；若不足则补充OTA
+        # 5★豪华市场：仅使用官网BAR加权平均
         high_vals, high_cnts = [], []
         for t in ("5_star", "5_deluxe"):
-            star_int = 5
             if t in rm and rm[t][0] and rm[t][1] >= 3:
                 high_vals.append(rm[t][0] * rm[t][1])
                 high_cnts.append(rm[t][1])
-            elif star_int in mkc_by_star and mkc_by_star[star_int][0] and not high_vals:
-                mkt_p, mkt_c = mkc_by_star[star_int]
-                high_vals.append(mkt_p * mkt_c)
-                high_cnts.append(mkt_c)
         if high_cnts:
             high_avg = sum(high_vals) / sum(high_cnts)
 
@@ -163,6 +330,11 @@ def collector_section() -> str:
     """).fetchone() or (0, 0, 0)
     total_7, ok_7 = r7[0], r7[1] or 0
 
+    latest_any = conn.execute("""
+        SELECT MAX(snapshot_time) FROM price_snapshots
+    """).fetchone()
+    latest_any = latest_any[0] if latest_any else None
+
     tier_rows = conn.execute("""
         SELECT tier, COUNT(*), AVG(official_bar), MIN(official_bar), MAX(official_bar)
         FROM price_snapshots
@@ -193,7 +365,7 @@ def collector_section() -> str:
         f"| 采集记录数 | {total_24} 条 | {total_7} 条 |",
         f"| 成功率 | {_pct(ok_24, total_24)} | {_pct(ok_7, total_7)} |",
         f"| 覆盖酒店数 | {hotels_24} / 76 | — |",
-        f"| 最近采集时间 | {last_snap or 'N/A'} | — |",
+        f"| 最近采集时间 | {last_snap or 'N/A'} | {latest_any or 'N/A'} |",
         "",
     ]
 
@@ -208,7 +380,10 @@ def collector_section() -> str:
         for note, cnt in err_rows:
             lines.append(f"- {note}（{cnt} 次）")
     else:
-        lines.append("✅ 近24h 无采集错误")
+        if total_24 == 0 and latest_any:
+            lines.append(f"⚠️ 近24h 无新采集；最近一次成功/写库时间为 {latest_any}")
+        else:
+            lines.append("✅ 近24h 无采集错误")
 
     lines.append(f"\n寻客触发（近7天）：{acq_total} 次\n")
     return "\n".join(lines)
@@ -357,31 +532,9 @@ def sys2_section() -> str:
     total_runs, first_run, max_hour = total_row
     days_running = _days_since(first_run) if first_run else "?"
 
-    # 各模型 24h 统计
-    model_rows = conn.execute("""
-        SELECT model_type, COUNT(*), AVG(rec_price),
-               SUM(CASE WHEN anomaly LIKE 'EXCEPTION%' THEN 1 ELSE 0 END),
-               AVG(CASE WHEN exp_lift IS NOT NULL AND exp_lift != '' THEN
-                   CAST(REPLACE(REPLACE(exp_lift,'%',''),' ','') AS REAL) ELSE NULL END)
-        FROM hourly_runs WHERE run_at >= datetime('now','-24 hours')
-        GROUP BY model_type
-    """).fetchall()
-    mdata = {r[0]: r for r in model_rows}
-
-    # 全量汇总（跨所有变体，MARE_ALL + MARE_3_STAR 合并）
-    tot_rows = conn.execute("""
-        SELECT
-          CASE
-            WHEN model_type LIKE 'MARE%'     THEN 'MARE'
-            WHEN model_type LIKE 'DIRECTOR%' THEN 'DIRECTOR'
-            WHEN model_type LIKE 'SELFACQ%'  THEN 'SELFACQ'
-            ELSE model_type
-          END as grp,
-          COUNT(*),
-          SUM(CASE WHEN anomaly LIKE 'EXCEPTION%' THEN 1 ELSE 0 END)
-        FROM hourly_runs GROUP BY grp
-    """).fetchall()
-    tmap = {r[0]: (r[1], r[2]) for r in tot_rows}
+    # 各模型统计：近24h为主，累计仅作参考
+    mdata = _hourly_group_stats(conn, "-24 hours")
+    tmap = _hourly_group_stats(conn)
 
     # 最新日汇总（daily_summaries 仅用 anomaly_count / total_runs；价格字段可能为0，不信任）
     lsum = conn.execute("""
@@ -411,23 +564,17 @@ def sys2_section() -> str:
     conn.close()
 
     def _m(key):
-        # 优先 *_ALL 变体，回退到其他包含 key 的
-        all_key = f"{key}_ALL"
-        for k, v in mdata.items():
-            if k == all_key: return v
-        for k, v in mdata.items():
-            if key in k: return v
-        return None
+        return mdata.get(key)
 
     def _t(key):
-        return tmap.get(key, (0, 0))
+        return tmap.get(key, (key, 0, None, 0, 0, None))
 
     # 分市场真实均价
     real_low, real_high = _real_market_avgs()
 
-    m = _m("MARE");     tot, tot_a   = _t("MARE")
-    d = _m("DIRECTOR"); tot_d, tot_da = _t("DIRECTOR")
-    s = _m("SELFACQ");  tot_s, tot_sa = _t("SELFACQ")
+    m = _m("MARE");     mt = _t("MARE")
+    d = _m("DIRECTOR"); dt = _t("DIRECTOR")
+    s = _m("SELFACQ");  st = _t("SELFACQ")
 
     # 优先使用直接计算值；回退到 daily_summaries（如果非零）；最后用整体 MARE avg
     p23_sum = lsum[0] if lsum and lsum[0] else None
@@ -452,20 +599,25 @@ def sys2_section() -> str:
     return "\n".join([
         "### 🤖 系统二：Claude Simulation 版",
         "",
+        "_说明：失败率仅统计 EXCEPTION；异常率包含护栏/压力测试告警，不等于程序崩溃。_",
+        "",
         "**① MARE 房价引擎**",
-        f"- 总运行次数：{tot:,} | 运行天数：{days_running} 天 | 失败率：{_pct(tot_a, tot)}",
+        f"- 近24h：{m[1]:,} 次 | 失败率：{_pct(m[3], m[1]) if m else 'N/A'} | 异常率：{_pct(m[4], m[1]) if m else 'N/A'}",
+        f"- 累计：{mt[1]:,} 次 | 运行天数：{days_running} 天 | 失败率：{_pct(mt[3], mt[1])} | 异常率：{_pct(mt[4], mt[1])}",
         f"- 3-4★市场推荐价：{_mop(p23)} | " + _vs_market(p23, real_low, "3-4★市场"),
         f"- 5★豪华市场推荐价：{_mop(p45)} | " + _vs_market(p45, real_high, "5★豪华市场"),
-        f"- 综合收益提升：{f'{m[4]:.1f}%' if m and m[4] else 'N/A'}",
+        f"- 综合收益提升：{f'{m[5]:.1f}%' if m and m[5] else 'N/A'}",
         f"- 模拟进度：第 {(max_hour or 0) + 1} / 504 小时（{((max_hour or 0) + 1) / 504 * 100:.0f}%）",
         "",
         "**② DirectorAI CRM（直销引流）**",
-        f"- 总运行次数：{tot_d:,} | 运行天数：{days_running} 天 | 失败率：{_pct(tot_da, tot_d)}",
+        f"- 近24h：{d[1]:,} 次 | 失败率：{_pct(d[3], d[1]) if d else 'N/A'} | 异常率：{_pct(d[4], d[1]) if d else 'N/A'}",
+        f"- 累计：{dt[1]:,} 次 | 运行天数：{days_running} 天 | 失败率：{_pct(dt[3], dt[1])} | 异常率：{_pct(dt[4], dt[1])}",
         f"- 当前24h推荐均价：{_mop(d[2]) if d else 'N/A'}",
-        f"- 收益提升估算：{f'{d[4]:.1f}%' if d and d[4] else 'N/A'}",
+        f"- 收益提升估算：{f'{d[5]:.1f}%' if d and d[5] else 'N/A'}",
         "",
         "**③ SelfACQ 自主寻客**",
-        f"- 总运行次数：{tot_s:,} | 运行天数：{days_running} 天 | 失败率：{_pct(tot_sa, tot_s)}",
+        f"- 近24h：{s[1]:,} 次 | 失败率：{_pct(s[3], s[1]) if s else 'N/A'} | 异常率：{_pct(s[4], s[1]) if s else 'N/A'}",
+        f"- 累计：{st[1]:,} 次 | 运行天数：{days_running} 天 | 失败率：{_pct(st[3], st[1])} | 异常率：{_pct(st[4], st[1])}",
         f"- 当前24h直销引导价：{_mop(s[2]) if s else 'N/A'}",
         f"- 寻客触发（近7天）：{acq_str}",
         "",
@@ -486,29 +638,8 @@ def sys3_section() -> str:
     total_runs, first_run, max_hour = total_row
     days_running = _days_since(first_run) if first_run else "?"
 
-    model_rows = conn.execute("""
-        SELECT model_type, COUNT(*), AVG(rec_price),
-               SUM(CASE WHEN anomaly LIKE 'EXCEPTION%' THEN 1 ELSE 0 END),
-               AVG(CASE WHEN exp_lift IS NOT NULL AND exp_lift != '' THEN
-                   CAST(REPLACE(REPLACE(exp_lift,'%',''),' ','') AS REAL) ELSE NULL END)
-        FROM hourly_runs WHERE run_at >= datetime('now','-24 hours')
-        GROUP BY model_type
-    """).fetchall()
-    mdata = {r[0]: r for r in model_rows}
-
-    tot_rows = conn.execute("""
-        SELECT
-          CASE
-            WHEN model_type LIKE 'MARE%'     THEN 'MARE'
-            WHEN model_type LIKE 'DIRECTOR%' THEN 'DIRECTOR'
-            WHEN model_type LIKE 'SELFACQ%'  THEN 'SELFACQ'
-            ELSE model_type
-          END as grp,
-          COUNT(*),
-          SUM(CASE WHEN anomaly LIKE 'EXCEPTION%' THEN 1 ELSE 0 END)
-        FROM hourly_runs GROUP BY grp
-    """).fetchall()
-    tmap = {r[0]: (r[1], r[2]) for r in tot_rows}
+    mdata = _hourly_group_stats(conn, "-24 hours")
+    tmap = _hourly_group_stats(conn)
 
     comp_row = conn.execute("""
         SELECT AVG(crewai_avg_mare), AVG(playwright_avg_mare),
@@ -519,23 +650,14 @@ def sys3_section() -> str:
     conn.close()
 
     def _m(key):
-        # 优先 *_ALL_FC 变体，回退到其他
-        all_key = f"{key}_ALL_FC"
-        for k, v in mdata.items():
-            if k == all_key: return v
-        all_key2 = f"{key}_ALL"
-        for k, v in mdata.items():
-            if k == all_key2: return v
-        for k, v in mdata.items():
-            if key in k: return v
-        return None
+        return mdata.get(key)
 
     def _t(key):
-        return tmap.get(key, (0, 0))
+        return tmap.get(key, (key, 0, None, 0, 0, None))
 
-    m = _m("MARE");     tot, tot_a   = _t("MARE")
-    d = _m("DIRECTOR"); tot_d, tot_da = _t("DIRECTOR")
-    s = _m("SELFACQ");  tot_s, tot_sa = _t("SELFACQ")
+    m = _m("MARE");     mt = _t("MARE")
+    d = _m("DIRECTOR"); dt = _t("DIRECTOR")
+    s = _m("SELFACQ");  st = _t("SELFACQ")
 
     comp_str = "N/A"
     if comp_row and comp_row[4] and comp_row[4] > 0:
@@ -567,22 +689,27 @@ def sys3_section() -> str:
     return "\n".join([
         "### 🤖 系统三：CrewAI 版",
         "",
+        "_说明：失败率仅统计 EXCEPTION；异常率包含护栏/压力测试告警，不等于程序崩溃。_",
+        "",
         "**① MARE 房价引擎（FC整合版）**",
-        f"- 总运行次数：{tot:,} | 运行天数：{days_running} 天 | 失败率：{_pct(tot_a, tot)}",
+        f"- 近24h：{m[1]:,} 次 | 失败率：{_pct(m[3], m[1]) if m else 'N/A'} | 异常率：{_pct(m[4], m[1]) if m else 'N/A'}",
+        f"- 累计：{mt[1]:,} 次 | 运行天数：{days_running} 天 | 失败率：{_pct(mt[3], mt[1])} | 异常率：{_pct(mt[4], mt[1])}",
         f"- 3-4★市场推荐价：{_mop(m_low[2]) if m_low else 'N/A'} | "
             + _vs_market(m_low[2] if m_low else None, real_low, "3-4★市场"),
         f"- 5★豪华市场推荐价：{_mop(m_high[2]) if m_high else 'N/A'} | "
             + _vs_market(m_high[2] if m_high else None, real_high, "5★豪华市场"),
-        f"- 收益提升：{f'{m[4]:.1f}%' if m and m[4] else 'N/A'} | CrewAI验证：{comp_str}",
+        f"- 收益提升：{f'{m[5]:.1f}%' if m and m[5] else 'N/A'} | CrewAI验证：{comp_str}",
         f"- 模拟进度：第 {(max_hour or 0) + 1} / 504 小时",
         "",
         "**② DirectorAI CRM（直销引流）**",
-        f"- 总运行次数：{tot_d:,} | 运行天数：{days_running} 天 | 失败率：{_pct(tot_da, tot_d)}",
+        f"- 近24h：{d[1]:,} 次 | 失败率：{_pct(d[3], d[1]) if d else 'N/A'} | 异常率：{_pct(d[4], d[1]) if d else 'N/A'}",
+        f"- 累计：{dt[1]:,} 次 | 运行天数：{days_running} 天 | 失败率：{_pct(dt[3], dt[1])} | 异常率：{_pct(dt[4], dt[1])}",
         f"- 当前24h推荐均价：{_mop(d[2]) if d else 'N/A'}",
-        f"- 收益提升估算：{f'{d[4]:.1f}%' if d and d[4] else 'N/A'}",
+        f"- 收益提升估算：{f'{d[5]:.1f}%' if d and d[5] else 'N/A'}",
         "",
         "**③ SelfACQ 自主寻客**",
-        f"- 总运行次数：{tot_s:,} | 运行天数：{days_running} 天 | 失败率：{_pct(tot_sa, tot_s)}",
+        f"- 近24h：{s[1]:,} 次 | 失败率：{_pct(s[3], s[1]) if s else 'N/A'} | 异常率：{_pct(s[4], s[1]) if s else 'N/A'}",
+        f"- 累计：{st[1]:,} 次 | 运行天数：{days_running} 天 | 失败率：{_pct(st[3], st[1])} | 异常率：{_pct(st[4], st[1])}",
         f"- 当前24h直销引导价：{_mop(s[2]) if s else 'N/A'}",
         f"- 寻客触发（近7天）：{acq_str}",
         "",
@@ -605,6 +732,7 @@ def build_report() -> str:
     )
     return (
         header
+        + _headline_section()  + "\n---\n\n"
         + collector_section() + "\n---\n\n"
         + sys1_section()       + "\n---\n\n"
         + sys2_section()       + "\n---\n\n"
@@ -617,10 +745,18 @@ if __name__ == "__main__":
     import traceback
     try:
         report = build_report()
+        saved_path = _save_report(report)
         print(report)
-        print("\n--- 正在推送企业微信 ---")
-        push(report)
-        print("✅ 推送完成")
+        print(f"\n--- 已保存日报 ---\n{saved_path}")
+        print("\n--- 正在推送 Telegram ---")
+        brief_ok = _telegram_send_text(_build_telegram_brief(saved_path))
+        doc_ok = _telegram_send_document(saved_path)
+        if brief_ok and doc_ok:
+            print("✅ Telegram 文本与附件推送完成")
+        elif brief_ok or doc_ok:
+            print("⚠️ Telegram 仅部分推送成功")
+        else:
+            print("⚠️ Telegram 推送未完成")
     except Exception as e:
         traceback.print_exc()
         print(f"❌ 报告生成失败: {e}")

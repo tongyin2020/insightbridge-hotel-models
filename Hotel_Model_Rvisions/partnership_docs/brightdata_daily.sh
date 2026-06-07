@@ -12,13 +12,13 @@ echo "$(date '+%Y-%m-%d %H:%M:%S') 开始每日抓取" >> "$LOG"
 
 # ── Part 1: Agoda OTA 价格抓取 ── 已停用 ────────────────────────────────────
 # ⚠️  2026-05-30 停用原因：Bright Data Dataset API 按记录收费（$131/次），成本过高
-# ✅  OTA 价格已改用 MakCorps API（$350/月固定费用，覆盖 Booking.com/Agoda/Trip.com）
-# ✅  MakCorps 配置：simulation_test/data_fetchers/makcorps_fetcher.py
+# ✅  OTA 价格抓取方案已迁移，旧链路不再使用
+# ✅  当前目录仅保留历史脚本说明，不再连接旧外部价格源
 # echo "$(date '+%H:%M:%S') [1/2] 提交 Agoda 任务..." >> "$LOG"
 # $PYTHON "$SCRIPT_DIR/02_BrightData_Macau_Scraper.py" submit >> "$LOG" 2>&1
 # sleep 1200
 # $PYTHON "$SCRIPT_DIR/02_BrightData_Macau_Scraper.py" fetch >> "$LOG" 2>&1
-echo "$(date '+%H:%M:%S') [跳过] Agoda BD抓取已停用，改用MakCorps" >> "$LOG"
+echo "$(date '+%H:%M:%S') [跳过] Agoda BD抓取已停用" >> "$LOG"
 
 # ── Part 2: IR 活动日历抓取（Playwright 抓取官网，无额外费用）────────────────
 echo "$(date '+%H:%M:%S') [1/1] 抓取 IR 活动日历..." >> "$LOG"

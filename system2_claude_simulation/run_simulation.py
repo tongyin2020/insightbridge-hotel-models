@@ -2,12 +2,12 @@
 澳门酒店 AI 模型 — 21天自动化模拟测试（真实数据版）
 ======================================================
 真实数据来源：
-  ✅ Booking.com 竞对房价（Playwright爬取）
-  ✅ Booking.com 4-5星均价 upper_tier_adr（Playwright）
+  ✅ Booking.com 竞对房价（price_snapshots / Firecrawl / DSEC）
+  ✅ Booking.com 4-5星均价 upper_tier_adr（price_snapshots / Firecrawl / DSEC）
   ✅ TurboJET渡轮满座率 → flight_ferry信号
-  ✅ 澳门天气（wttr.in）
+  ✅ 澳门天气（Open-Meteo）
   ✅ 假日/周末（日历）
-  ✅ 澳门活动密度（澳门旅游局）
+  ✅ 澳门活动密度（IR缓存 / Firecrawl）
   ✅ 访客统计（DSEC月报编码）
   ✅ 官网BAR + OTA竞对价：Shifter住宅代理每日3次采集（hotel_real_data.db）
 
@@ -107,10 +107,10 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
                                 month: int = None) -> float:
     """
     动态计算 base_price，替代随机数方式：
-      Step A — 历史参考价（四层优先级，MakCorps已停用）：
+      Step A — 历史参考价（四层优先级）：
                层1 Shifter真实BAR(85%) + DSEC(15%) → 混合OTA权重
                层2 Shifter OTA折算BAR(85%) + DSEC(15%) → 混合OTA权重
-               层3 冷启动：DSEC统计局(100%)，不与MakCorps fallback混合
+               层3 冷启动：DSEC统计局(100%)，不与其他外部价格混合
                层4 完全冷启动兜底：OTA估算×0.97
       Step B — 星级范围截断
       Step C — 声誉情感修正 rep_adj ∈ [-0.17, +0.17]
@@ -196,10 +196,10 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
     w_ota = _DEMAND_OTA_W.get((seg, demand_level), w_ota)
     w_bar = 1.0 - w_ota
 
-    # ── 四层优先级定价参考（MakCorps已停用）────────────────────────────────
+    # ── 四层优先级定价参考 ────────────────────────────────────────────────
     # 层1：Shifter真实官网BAR → 85%BAR + 15%DSEC背景，再与OTA权重混合
     # 层2：Shifter真实OTA价折算BAR → 85%折算BAR + 15%DSEC，再与OTA权重混合
-    # 层3：冷启动 — DSEC统计局100%作为唯一历史参考（MakCorps已停用，不再混合fallback）
+    # 层3：冷启动 — DSEC统计局100%作为唯一历史参考
     # 层4：完全冷启动兜底（无任何真实数据）
     if real_bar_avg is not None:
         # 层1：有Shifter真实BAR — 85%真实BAR + 15%DSEC市场背景
@@ -213,7 +213,7 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
                           if dsec_adr_ref > 0 else ota_bar_est)
         base = w_bar * historical_ref + w_ota * ota_estimate
     elif dsec_adr_ref > 0:
-        # 层3：冷启动 — DSEC统计局为唯一历史参考，不与MakCorps fallback混合
+        # 层3：冷启动 — DSEC统计局为唯一历史参考
         base = dsec_adr_ref
     else:
         # 层4：完全冷启动兜底（无真实数据）
@@ -284,13 +284,32 @@ def _wecom_push_async(content: str):
                 return
             # P1 FIX: 使用 stdin 传递 content，避免命令行长度超过 ARG_MAX（macOS ~256KB）
             subprocess.run(
-                ["python3", wecom_script],
+                [sys.executable, wecom_script],
                 input=content.encode("utf-8"),
                 capture_output=True, timeout=30
             )
         except Exception:
             pass
     threading.Thread(target=_push, daemon=True).start()
+
+def _normalize_anomalies(raw) -> list[str]:
+    if not raw:
+        return []
+    if isinstance(raw, list):
+        return [str(x).strip() for x in raw if str(x).strip()]
+    return [s.strip() for s in str(raw).split(";") if s.strip()]
+
+def _summarize_hour_health(hour_results: list[tuple]) -> tuple[int, int, int]:
+    total = len(hour_results)
+    failures = 0
+    anomalies = 0
+    for _, _, _, raw in hour_results:
+        issues = _normalize_anomalies(raw)
+        if issues:
+            anomalies += 1
+        if any("EXCEPTION" in issue for issue in issues):
+            failures += 1
+    return total, failures, anomalies
 
 _SHIFTER_MARKET_CACHE = Path(__file__).parent / "data" / "shifter_market_cache.json"
 _SHIFTER_MARKET_CACHE_TTL = 86400  # 24小时缓存（市场均价日更即可）
@@ -519,7 +538,7 @@ def _alert_critical(hour: int, critical_list: list[str], avg_mare: float, avg_ac
     _wecom_push_async(msg)
 
 def _push_metrics_snapshot(hour: int, avg_mare: float, avg_crm: float, avg_acq: float,
-                            anomaly_count: int):
+                            total_runs: int, failure_count: int, anomaly_count: int):
     """每6小时推送一次模型表现快报"""
     global _last_metrics_push
     now = time.time()
@@ -555,7 +574,14 @@ def _push_metrics_snapshot(hour: int, avg_mare: float, avg_crm: float, avg_acq: 
                 f"{rows}"
             )
 
-    status = "✅ 正常" if anomaly_count == 0 else f"⚠️ {anomaly_count} 项异常"
+    failure_rate = f"{(failure_count / total_runs * 100):.1f}%" if total_runs else "N/A"
+    anomaly_rate = f"{(anomaly_count / total_runs * 100):.1f}%" if total_runs else "N/A"
+    if failure_count > 0:
+        status = f"🔴 失败 {failure_count}/{total_runs} | 异常 {anomaly_count}/{total_runs}"
+    elif anomaly_count > 0:
+        status = f"⚠️ 失败 0/{total_runs} | 异常 {anomaly_count}/{total_runs}"
+    else:
+        status = f"✅ 失败 0/{total_runs} | 异常 0/{total_runs}"
     day_num = (hour // 24) + 1
     msg = (
         f"## 📊 AI模型表现快报 — 第{day_num}天 H{hour+1}\n"
@@ -567,13 +593,20 @@ def _push_metrics_snapshot(hour: int, avg_mare: float, avg_crm: float, avg_acq: 
         f"| DirectorAI CRM（3★） | MOP {avg_crm:.0f} | {len(HOTELS_3_STAR)}家真实 |\n"
         f"| SelfACQ 直销（4-5★） | MOP {avg_acq:.0f} | {len(HOTELS_45_STAR)}家真实 |\n"
         f"{market_section}\n"
+        f"运行健康：失败率 {failure_rate} | 异常率 {anomaly_rate}\n"
+        f"注：异常率含护栏/压力测试告警，不等于程序崩溃\n"
         f"状态：{status} | 进度：{hour+1}/504小时 ({(hour+1)/504*100:.0f}%)"
     )
     _wecom_push_async(msg)
 
 def _push_daily_summary(summary: dict):
     """每日汇总推送（含真实市场基准对比）"""
-    health_icon = "✅" if summary['anomalies'] == 0 else ("⚠️" if summary['anomalies'] < 500 else "🔴")
+    if summary['failures'] > 0:
+        health_icon = "🔴"
+    elif summary['anomalies'] > 0:
+        health_icon = "⚠️"
+    else:
+        health_icon = "✅"
     day = summary.get('day', 0) + 1
 
     bm = _load_market_benchmarks_by_star()
@@ -615,7 +648,9 @@ def _push_daily_summary(summary: dict):
         f"| DirectorAI CRM（3★） | MOP {summary['avg_crm_price']} |\n"
         f"| SelfACQ 直销（4-5★，{len(HOTELS_45_STAR)}家真实） | MOP {summary['avg_selfacq_offer']} |\n\n"
         f"**运行状态**\n"
-        f"运行次数：{summary['runs']:,} | 异常：{summary['anomalies']}\n"
+        f"运行次数：{summary['runs']:,} | 失败：{summary['failures']} ({summary['failure_rate']:.1f}%) | "
+        f"异常：{summary['anomalies']} ({summary['anomaly_rate']:.1f}%)\n"
+        f"注：异常含护栏/压力测试告警，不等于程序崩溃\n"
         f"{market_note}{revpar_note}\n"
         f"{health_icon} {summary['health']} | 进度：{day}/21天"
     )
@@ -628,7 +663,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 os.environ.setdefault("MODEL_WEIGHTS_PATH", str(Path(__file__).parent / "data" / "model_weights.json"))
 
 from dotenv import load_dotenv
-load_dotenv(Path(__file__).parent.parent / ".env")   # 加载环境变量（MakCorps已停用）（主.env在上层目录）
+load_dotenv(Path(__file__).parent.parent / ".env")   # 加载主.env环境变量
 
 from data_fetchers.real_data import get_all_real_signals
 from data_fetchers.scenario_engine import get_scenario, get_scenario_stats, HotelScenario, SCENARIOS
@@ -837,17 +872,10 @@ def get_macau_market_signal(sim_hour: int, real_data: dict) -> dict:
     zhuhai_sat  = round(max( 0.0, min(1.0,
                     market_scenario.sim_zhuhai_saturation + _jitter(0.0, 0.03))), 3)
 
-    # ota_booking_pace：优先MakCorps真实数据，降级到场景模拟
-    mc_pace   = real_data.get("makcorps_ota_pace")     # None = 未成功
-    mc_source = real_data.get("makcorps_ota_source", "no_key")
-    # 修正(2026-06-01): 增加 "makcorps_disabled" 到拦截列表（防止信号=None但source变更时误通过）
-    if mc_pace is not None and mc_source not in ("no_key", "makcorps_failed", "import_error", "makcorps_disabled"):
-        ota_pace        = round(max(0.0, min(1.0, mc_pace)), 3)
-        ota_pace_source = mc_source                     # "makcorps" or "makcorps_cached"
-    else:
-        ota_pace        = round(max(0.0, min(1.0,
-                          market_scenario.sim_ota_booking_pace + _jitter(0.0, 0.03))), 3)
-        ota_pace_source = f"scenario_{market_scenario.name}"
+    # ota_booking_pace：统一由场景模拟驱动
+    ota_pace = round(max(0.0, min(1.0,
+                  market_scenario.sim_ota_booking_pace + _jitter(0.0, 0.03))), 3)
+    ota_pace_source = f"scenario_{market_scenario.name}"
 
     # ── DSEC 澳门统计局需求信号（3/4/5★加权混合）──────────────────────────
     dsec_market_occ = 0.0
@@ -884,7 +912,7 @@ def get_macau_market_signal(sim_hour: int, real_data: dict) -> dict:
         # DSEC 澳门统计局月度需求信号（硬核市场数据）
         "dsec_market_occ":   dsec_market_occ,
 
-        # 混合信号（MakCorps真实 or 场景模拟）
+        # 混合信号（场景模拟）
         "border_flow":        border_flow,
         "ota_booking_pace":   min(1.0, ota_pace),
         "ota_pace_source":    ota_pace_source,
@@ -1394,6 +1422,10 @@ def write_daily_summary(conn: sqlite3.Connection, day: int):
         "SELECT COUNT(*) FROM hourly_runs WHERE anomaly != '' AND sim_hour BETWEEN ? AND ?",
         (start_hour, end_hour - 1),
     ).fetchone()[0]
+    failure_count = c.execute(
+        "SELECT COUNT(*) FROM hourly_runs WHERE anomaly LIKE '%EXCEPTION%' AND sim_hour BETWEEN ? AND ?",
+        (start_hour, end_hour - 1),
+    ).fetchone()[0]
     total_runs = c.execute(
         "SELECT COUNT(*) FROM hourly_runs WHERE sim_hour BETWEEN ? AND ?",
         (start_hour, end_hour - 1),
@@ -1407,7 +1439,10 @@ def write_daily_summary(conn: sqlite3.Connection, day: int):
         "day":                    day + 1,
         "date":                   date_str,
         "runs":                   total_runs,
+        "failures":               failure_count,
         "anomalies":              anomaly_count,
+        "failure_rate":           round((failure_count / total_runs * 100), 1) if total_runs else 0.0,
+        "anomaly_rate":           round((anomaly_count / total_runs * 100), 1) if total_runs else 0.0,
         "avg_mare_price":         round(avg_mare, 1),
         "avg_crm_price":          round(avg_crm, 1),
         "avg_selfacq_offer":      round(avg_acq, 1),
@@ -1494,16 +1529,18 @@ def main():
                                  (run_at_str, hotel["hotel_id"], model_type, a))
 
         def _insert_err(model_type, hotel, exc):
+            msg = f"EXCEPTION: {type(exc).__name__}: {exc}"
             conn.execute(
                 "INSERT INTO hourly_runs VALUES (NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (run_at_str, hour, hotel["hotel_id"], hotel["name"], model_type,
                  signal["season"], "{}", "{}",
                  None, "ERROR", "None", "N/A",
-                 f"EXCEPTION: {type(exc).__name__}: {exc}",
+                 msg,
                  weather_c, int(signal["is_holiday"]), int(signal["is_weekend"])),
             )
+            hour_results.append((model_type, hotel["hotel_id"], 0, [msg]))
 
-        # ── 动态base_price：真实BAR/OTA + DSEC背景，MakCorps已停用 ───────────
+        # ── 动态base_price：真实BAR/OTA + DSEC背景 ────────────────────────
         cur_month = run_start.month
         # 从real_data获取市场OTA参考价（作为实时OTA输入）
         _ota_ref_3 = float(sum(real_data["booking_prices_3"]) / len(real_data["booking_prices_3"])) \
@@ -1658,7 +1695,7 @@ def main():
                 print(f"  [V6学习] 周度校准失败（不影响主流程）: {_e}")
 
         # ── 控制台进度输出 ────────────────────────────────────────────────
-        anomaly_count = sum(1 for _, _, _, a in hour_results if a)
+        total_runs_hour, failure_count, anomaly_count = _summarize_hour_health(hour_results)
         prices_mare = [p for t, _, p, _ in hour_results if t == "MARE" and p]
         prices_crm  = [p for t, _, p, _ in hour_results if t == "CRM"  and p]
         prices_acq  = [p for t, _, p, _ in hour_results if t == "ACQ"  and p]
@@ -1687,7 +1724,8 @@ def main():
 
         # ── 模型表现快报（每6小时，不阻塞）──────────────────────────────────
         if (hour + 1) % 6 == 0:
-            _push_metrics_snapshot(hour, avg_mare, avg_crm, avg_acq, anomaly_count)
+            _push_metrics_snapshot(hour, avg_mare, avg_crm, avg_acq,
+                                   total_runs_hour, failure_count, anomaly_count)
 
         # ── 每日汇总（整点小时写一次）────────────────────────────────────
         if (hour + 1) % 24 == 0:

@@ -3,6 +3,7 @@
 ============================
 用法：
   python3 wecom_push.py "消息内容"          → 推送给所有已注册会话
+  echo "消息内容" | python3 wecom_push.py  → 从 stdin 读取后推送
   python3 wecom_push.py --listen             → 监听模式，收到消息自动记录 chatid/userid
 
 集成示例：
@@ -152,11 +153,17 @@ def push_to_chat(chatid: str, chat_type: int, content: str):
 
 # ── 命令行入口 ─────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    if len(sys.argv) < 2 or sys.argv[1] == "--help":
+    if len(sys.argv) >= 2 and sys.argv[1] == "--help":
         print(__doc__)
         sys.exit(0)
-    if sys.argv[1] == "--listen":
+    if len(sys.argv) >= 2 and sys.argv[1] == "--listen":
         asyncio.run(_listen_mode())
     else:
-        content = " ".join(sys.argv[1:])
+        if len(sys.argv) >= 2:
+            content = " ".join(sys.argv[1:])
+        else:
+            content = sys.stdin.read().strip()
+            if not content:
+                print(__doc__)
+                sys.exit(0)
         asyncio.run(_push_to_all(content))

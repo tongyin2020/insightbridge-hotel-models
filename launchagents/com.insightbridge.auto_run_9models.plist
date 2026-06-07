@@ -9,29 +9,23 @@
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-    <string>/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/auto_run_9models.sh</string>
+    <string>/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/run_daily_9models_pipeline.sh</string>
   </array>
 
   <key>WorkingDirectory</key>
   <string>/Users/tongyin/Desktop/InsightBridge_九大模型_v2026</string>
 
-  <!-- 每天 06:00 和 18:00 各触发一次 -->
+  <!-- 每天 09:00 触发一次总控 -->
   <key>StartCalendarInterval</key>
-  <array>
-    <dict>
-      <key>Hour</key><integer>6</integer>
-      <key>Minute</key><integer>0</integer>
-    </dict>
-    <dict>
-      <key>Hour</key><integer>18</integer>
-      <key>Minute</key><integer>0</integer>
-    </dict>
-  </array>
+  <dict>
+    <key>Hour</key><integer>9</integer>
+    <key>Minute</key><integer>0</integer>
+  </dict>
 
   <key>StandardOutPath</key>
-  <string>/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/auto_run_9models.log</string>
+  <string>/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/reports/daily_model_reports/daily_9models_launchd.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/auto_run_9models.log</string>
+  <string>/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/reports/daily_model_reports/daily_9models_launchd.err</string>
 
   <!-- 不在加载时立即执行，只按计划时间触发 -->
   <key>RunAtLoad</key>
@@ -43,6 +37,20 @@
     <string>/Users/tongyin</string>
     <key>PATH</key>
     <string>/opt/anaconda3/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>PLAYWRIGHT_BROWSERS_PATH</key>
+    <string>/Users/tongyin/Library/Caches/ms-playwright</string>
+    <key>SHIFTER_USER</key>
+    <string>customer-tongyin-sid-session-ttl-60</string>
+    <key>SHIFTER_PASS</key>
+    <string>UyOoifYa</string>
+    <key>SHIFTER_HOST</key>
+    <string>p.shifter.io</string>
+    <key>SHIFTER_PORT</key>
+    <string>443</string>
+    <key>FIRECRAWL_API_KEY</key>
+    <string>fc-b5f10c8338574f44b0c438ca06845470</string>
+    <key>MAX_COLLECTION_MINUTES</key>
+    <string>65</string>
   </dict>
 </dict>
 </plist>

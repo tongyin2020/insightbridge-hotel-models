@@ -3,7 +3,7 @@ InsightBridge — Bright Data 澳门酒店价格抓取器 v3
 =================================================
 两阶段设计：
   Phase 1 (submit): 提交抓取任务，保存 snapshot_id
-  Phase 2 (fetch):  等任务完成后取回数据，写入 makcorps_cache.db
+  Phase 2 (fetch):  等任务完成后取回数据，写入本地价格缓存
 
 运行方式：
   python3 02_BrightData_Macau_Scraper.py submit   # 提交任务
@@ -242,21 +242,21 @@ def _extract_prices(records: list[dict], label: str = "") -> list[dict]:
 
 
 # ══════════════════════════════════════════════════════════════════
-# 写入 makcorps_cache.db
+# 写入本地价格缓存
 # ══════════════════════════════════════════════════════════════════
 
 def _export_to_db(results: dict, date_str: str):
     """
-    把 Agoda + Trip.com 价格信号写入 makcorps_cache.db。
+    把 Agoda + Trip.com 价格信号写入本地价格缓存。
     写三个 key：
       brightdata_agoda_{date}   — Agoda 单独信号
       brightdata_trip_{date}    — Trip.com 单独信号（有数据才写）
       brightdata_pace_{date}    — 两者合并信号（模型主用）
     """
     import sqlite3
-    db_path = Path(__file__).parent.parent / "simulation_test" / "makcorps_cache.db"
+    db_path = Path(__file__).parent.parent / "simulation_test" / "price_signal_cache.db"
     if not db_path.exists():
-        print("  ℹ️  makcorps_cache.db 不存在，跳过")
+        print("  ℹ️  本地价格缓存不存在，跳过")
         return
 
     agoda_prices_usd: list[float] = []
