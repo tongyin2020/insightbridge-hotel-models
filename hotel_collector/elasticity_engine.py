@@ -42,8 +42,10 @@ import json
 from pathlib import Path
 from datetime import datetime
 from typing import NamedTuple
+from functools import lru_cache
 
 log = logging.getLogger("elasticity")
+_V6_PROFILE_PATH = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/共用_HROS_V6引擎/hotel_profiles_v6.json")
 
 # ── 星级价格护栏（MOP）────────────────────────────────────────────────────────
 _PRICE_FLOOR   = {3: 680,  4: 750,  5: 1200}
@@ -100,6 +102,14 @@ _SEASON_MULTIPLIER = {
 }
 
 
+@lru_cache(maxsize=1)
+def _load_v6_profiles() -> dict[str, dict]:
+    try:
+        return json.loads(_V6_PROFILE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
 class ElasticityResult(NamedTuple):
     optimal_price:        float   # RevPAR 最优推荐价 (MOP)
     predicted_occupancy:  float   # 该价格下预测入住率 [0,1]
@@ -151,11 +161,17 @@ class ElasticityEngine:
         season          : 季节 (super_peak/peak/normal/low)
         hotel_id        : 酒店ID（有真实弹性系数时优先使用）
         """
+        if candidate_price <= 0:
+            candidate_price = float(_PRICE_FLOOR.get(star, 420))
+
         if market_price <= 0:
             market_price = candidate_price
+        if market_price <= 0:
+            market_price = float(_PRICE_FLOOR.get(star, 420))
 
         elasticity = self._get_elasticity(star, district, hotel_id, season)
         base_occ   = _BASE_OCCUPANCY.get(demand_level, 0.72)
+        hotel_anchor = self._get_hotel_anchor(hotel_id)
 
         floor_p = _PRICE_FLOOR.get(star, 420)
         ceil_p  = _PRICE_CEILING.get(star, 8000)
@@ -163,6 +179,16 @@ class ElasticityEngine:
         # 搜索范围：市场价 ±40%，再与绝对护栏取交集
         search_lo = max(floor_p, market_price * 0.70)
         search_hi = min(ceil_p,  market_price * 1.45)
+        if star >= 5:
+            luxury_anchor = max(market_price, hotel_anchor or 0.0, candidate_price or 0.0)
+            if luxury_anchor >= 1800:
+                elasticity *= 0.82
+                if (district or "").upper() in ("COT", "TAIPA"):
+                    elasticity *= 0.92
+                if (season or "normal").lower() in ("peak", "super_peak"):
+                    elasticity *= 0.92
+                search_lo = max(search_lo, luxury_anchor * 0.82)
+                search_hi = min(ceil_p, max(search_hi, luxury_anchor * 1.20))
 
         best_revpar = -1.0
         best_price  = market_price
@@ -299,6 +325,18 @@ class ElasticityEngine:
         season_lower = (season or "normal").lower()
         multiplier   = _SEASON_MULTIPLIER.get(season_lower, 1.0)
         return round(base_e * multiplier, 4)
+
+    def _get_hotel_anchor(self, hotel_id: str | None) -> float | None:
+        if not hotel_id:
+            return None
+        profile = _load_v6_profiles().get(hotel_id)
+        if not profile:
+            return None
+        try:
+            anchor = float(profile.get("baseline_adr") or 0.0)
+            return anchor or None
+        except Exception:
+            return None
 
 
 # ── PMS 数据库建表脚本（Phase 3 接口）────────────────────────────────────────

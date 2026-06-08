@@ -34,6 +34,20 @@ import logging
 
 import requests
 
+_MODEL_ROOT = Path(__file__).resolve().parent.parent
+if str(_MODEL_ROOT) not in sys.path:
+    sys.path.insert(0, str(_MODEL_ROOT))
+
+from model_refinement import (
+    EXTREME_CATEGORIES,
+    NORMAL_CATEGORIES,
+    apply_selfacq_profit_guard,
+    compute_dual_score,
+    get_director_feedback_signal,
+    parse_pct_text,
+    record_director_outcome,
+)
+
 # ── HROS V6 引擎（RevPAR优化 + 学习循环 + 收益归因）────────────────────────
 _V6_ENGINE_DIR = Path(__file__).resolve().parent.parent / "共用_HROS_V6引擎"
 _V6_OK = False
@@ -827,6 +841,22 @@ def init_db():
             baseline_revpar REAL, optimized_revpar REAL,
             total_lift_pct REAL, attribution_json TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS model_selection_scores (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_at TEXT,
+            model_family TEXT,
+            scenario_band TEXT,
+            sample_size INTEGER,
+            total_score REAL,
+            profit_uplift_pct REAL,
+            failure_rate_pct REAL,
+            anomaly_rate_pct REAL,
+            real_data_ratio REAL,
+            explainability_ratio REAL,
+            runtime_cost_ratio REAL,
+            notes TEXT
+        );
     """)
     conn.commit()
     return conn
@@ -1125,6 +1155,8 @@ def run_45star_test(hotel: dict, signal: dict, real_data: dict,
 
     result = {
         "hotel_id": hotel["hotel_id"],
+        "scenario": scenario.name,
+        "scenario_category": scenario.category,
         "guest_segment": guest_profile["segment"],
         "loyalty_tier": guest_profile["loyalty"],
         "objective_mode": mode.value,
@@ -1138,6 +1170,11 @@ def run_45star_test(hotel: dict, signal: dict, real_data: dict,
         "occupancy": occupancy,
         "demand_high": signal["is_holiday"] or signal["is_weekend"],
     }
+
+    result = apply_selfacq_profit_guard(result, hotel, scenario)
+    direct_offer_price = float(result.get("direct_offer_price", direct_offer_price))
+    direct_net_revenue = float(result.get("direct_net_revenue", direct_net_revenue))
+    direct_wins = bool(result.get("direct_wins_vs_ota", direct_wins))
 
     # ── Phase 2：弹性引擎验证 SelfACQ 直销价格合理性 ─────────────────────────
     if _ELASTICITY_OK and direct_offer_price > 0:
@@ -1191,7 +1228,10 @@ def run_45star_test(hotel: dict, signal: dict, real_data: dict,
 
 # ── DirectorAI CRM集成模型测试（3星）────────────────────────────────────────
 def run_director_crm_test(hotel: dict, signal: dict, real_data: dict,
-                          scenario: HotelScenario) -> dict:
+                          scenario: HotelScenario,
+                          source_system: str = "S2",
+                          run_at: str | None = None,
+                          sim_hour: int = -1) -> dict:
     """
     测试DirectorAI CRM/PSRS集成模型在3星酒店的表现。
     内部数据（渠道分布/PSRS状态/CRM识别率/客户忠诚度）来自scenario，
@@ -1215,6 +1255,8 @@ def run_director_crm_test(hotel: dict, signal: dict, real_data: dict,
     else:
         base_rate = 0.55 if is_returning else 0.08
         crm_match_prob = min(0.92, base_rate * (1.12 if signal["is_holiday"] else 1.0))
+    feedback_signal = get_director_feedback_signal(hotel["hotel_id"])
+    crm_match_prob = max(0.02, min(0.96, crm_match_prob + feedback_signal.match_rate_delta))
     crm_matched = random.random() < crm_match_prob
 
     loyalty_alias = {
@@ -1260,6 +1302,11 @@ def run_director_crm_test(hotel: dict, signal: dict, real_data: dict,
 
     # ── CRM忠诚度调价 ─────────────────────────────────────────────────
     discount_map = {"platinum": 0.10, "gold": 0.08, "silver": 0.04, "bronze": 0.02, "none": 0.0}
+    if feedback_signal.samples >= 6:
+        discount_map = {
+            key: max(0.0, min(0.12, value + feedback_signal.discount_bias_delta))
+            for key, value in discount_map.items()
+        }
     crm_adjusted_price = round(hotel["base_price"] * (1.0 - discount_map[loyalty_key]))
 
     # ── V6 CRM 护栏：防止折扣过深摧毁 ADR ───────────────────────────────────
@@ -1291,6 +1338,7 @@ def run_director_crm_test(hotel: dict, signal: dict, real_data: dict,
     result = {
         "hotel_id":             hotel["hotel_id"],
         "scenario":             scenario.name,
+        "scenario_category":    scenario.category,
         "channel":              channel,
         "is_returning_guest":   is_returning,
         "loyalty_tier":         loyalty_tier,
@@ -1308,6 +1356,8 @@ def run_director_crm_test(hotel: dict, signal: dict, real_data: dict,
         "occupancy":            occupancy,
         "demand_high":          signal["is_holiday"] or signal["is_weekend"],
         "crm_v6_guardrail":     result_crm_guardrail,
+        "director_feedback_avg": round(feedback_signal.avg_score, 4),
+        "director_feedback_samples": feedback_signal.samples,
     }
 
     # ── Phase 2：弹性引擎验证 CRM 调价的 RevPAR 合理性 ───────────────────────
@@ -1343,6 +1393,24 @@ def run_director_crm_test(hotel: dict, signal: dict, real_data: dict,
             ),
             rooms_available=1.0,
         )
+
+    record_director_outcome(
+        source_system=source_system,
+        run_at=run_at or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        sim_hour=sim_hour,
+        hotel_id=hotel["hotel_id"],
+        scenario_name=scenario.name,
+        scenario_category=scenario.category,
+        base_price=float(hotel["base_price"]),
+        crm_adjusted_price=float(crm_adjusted_price),
+        integration_score=float(integration_score),
+        crm_matched=crm_matched,
+        psrs_status=psrs_status,
+        whatsapp_delivered=whatsapp_delivered,
+        upsell_revenue=float(upsell_revenue),
+        ota_commission_saved=float(ota_commission_saved),
+        payload=result,
+    )
 
     return result
 
@@ -1435,6 +1503,97 @@ def write_daily_summary(conn: sqlite3.Connection, day: int):
     avg_crm  = sum(r[0] for r in rows_crm  if r[0]) / len(rows_crm)  if rows_crm  else 0
     avg_acq  = sum(r[0] for r in rows_acq  if r[0]) / len(rows_acq)  if rows_acq  else 0
 
+    score_rows = c.execute(
+        """
+        SELECT model_type, output_json, anomaly, exp_lift
+        FROM hourly_runs
+        WHERE sim_hour BETWEEN ? AND ?
+        """,
+        (start_hour, end_hour - 1),
+    ).fetchall()
+
+    score_buckets: dict[tuple[str, str], list[tuple[dict, str, str]]] = {}
+    for model_type, output_json, anomaly, exp_lift in score_rows:
+        try:
+            out = json.loads(output_json or "{}")
+        except Exception:
+            out = {}
+        scenario_category = out.get("scenario_category", "normal")
+        scenario_band = "extreme" if scenario_category in EXTREME_CATEGORIES else "normal"
+        model_family = (
+            "MARE" if "MARE" in model_type
+            else "DIRECTOR" if "DIRECTOR" in model_type
+            else "SELFACQ"
+        )
+        score_buckets.setdefault((model_family, scenario_band), []).append((out, anomaly or "", exp_lift or ""))
+
+    selection_scores = []
+    heuristics = {
+        "MARE": {"real": 0.78, "explain": 0.86, "cost": 0.84},
+        "DIRECTOR": {"real": 0.72, "explain": 0.92, "cost": 0.90},
+        "SELFACQ": {"real": 0.68, "explain": 0.84, "cost": 0.91},
+    }
+    for (model_family, scenario_band), items in sorted(score_buckets.items()):
+        sample_size = len(items)
+        failure_n = sum(1 for _, anomaly, _ in items if "EXCEPTION" in anomaly)
+        anomaly_n = sum(1 for _, anomaly, _ in items if anomaly.strip())
+        uplifts = []
+        for out, _, exp_lift in items:
+            if model_family == "SELFACQ":
+                ota_profit = float(out.get("ota_net_profit") or out.get("ota_net_revenue") or 0.0)
+                direct_profit = float(out.get("direct_net_profit_after_cac") or out.get("direct_net_revenue") or 0.0)
+                if ota_profit > 0:
+                    uplifts.append((direct_profit - ota_profit) / ota_profit * 100.0)
+            else:
+                lift_val = parse_pct_text(out.get("expected_revenue_lift") or exp_lift)
+                uplifts.append(lift_val)
+        profit_uplift_pct = sum(uplifts) / len(uplifts) if uplifts else 0.0
+        failure_rate_pct = failure_n / max(sample_size, 1) * 100.0
+        anomaly_rate_pct = anomaly_n / max(sample_size, 1) * 100.0
+        total_score = compute_dual_score(
+            profit_uplift_pct=profit_uplift_pct,
+            failure_rate_pct=failure_rate_pct,
+            anomaly_rate_pct=anomaly_rate_pct,
+            real_data_ratio=heuristics[model_family]["real"],
+            explainability_ratio=heuristics[model_family]["explain"],
+            runtime_cost_ratio=heuristics[model_family]["cost"],
+        )
+        notes = f"{model_family}:{scenario_band}"
+        c.execute(
+            """
+            INSERT INTO model_selection_scores (
+                run_at, model_family, scenario_band, sample_size, total_score,
+                profit_uplift_pct, failure_rate_pct, anomaly_rate_pct,
+                real_data_ratio, explainability_ratio, runtime_cost_ratio, notes
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                date_str,
+                model_family,
+                scenario_band,
+                sample_size,
+                total_score,
+                round(profit_uplift_pct, 2),
+                round(failure_rate_pct, 2),
+                round(anomaly_rate_pct, 2),
+                heuristics[model_family]["real"],
+                heuristics[model_family]["explain"],
+                heuristics[model_family]["cost"],
+                notes,
+            ),
+        )
+        selection_scores.append(
+            {
+                "model_family": model_family,
+                "scenario_band": scenario_band,
+                "sample_size": sample_size,
+                "total_score": total_score,
+                "profit_uplift_pct": round(profit_uplift_pct, 2),
+                "failure_rate_pct": round(failure_rate_pct, 2),
+                "anomaly_rate_pct": round(anomaly_rate_pct, 2),
+            }
+        )
+
     summary = {
         "day":                    day + 1,
         "date":                   date_str,
@@ -1449,6 +1608,7 @@ def write_daily_summary(conn: sqlite3.Connection, day: int):
         "hotels_3star":           len(HOTELS_3_STAR),
         "hotels_45star":          len(HOTELS_45_STAR),
         "health":                 "OK" if anomaly_count == 0 else f"{anomaly_count} issues",
+        "selection_scores":       selection_scores,
     }
 
     c.execute(
@@ -1592,7 +1752,15 @@ def main():
                 hotel["hotel_id"], hotel["star"], _ota_in, cur_month
             )
             try:
-                result = run_director_crm_test(hotel, signal, real_data, scenario)
+                result = run_director_crm_test(
+                    hotel,
+                    signal,
+                    real_data,
+                    scenario,
+                    source_system="S2",
+                    run_at=run_at_str,
+                    sim_hour=hour,
+                )
                 anomalies = detect_anomalies(hotel, result, signal, "DIRECTOR_CRM_ALL")
                 crm_price = result.get("crm_adjusted_price", 0)
                 crm_output = dict(result)

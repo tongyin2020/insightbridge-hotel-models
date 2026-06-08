@@ -9,11 +9,11 @@
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-    <string>/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/run_daily_9models_pipeline.sh</string>
+    <string>/Users/tongyin/Library/Application Support/InsightBridgeRunner/launch_daily_9models_via_terminal.sh</string>
   </array>
 
   <key>WorkingDirectory</key>
-  <string>/Users/tongyin/Desktop/InsightBridge_九大模型_v2026</string>
+  <string>/Users/tongyin/Library/Application Support/InsightBridgeRunner</string>
 
   <!-- 每天 09:00 触发一次总控 -->
   <key>StartCalendarInterval</key>

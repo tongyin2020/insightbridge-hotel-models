@@ -480,6 +480,7 @@ def main():
                     (run_at, hour, hotel["hotel_id"], hotel["name"], "MARE_ALL_FC",
                      signal["season"],
                      json.dumps({"scenario": scenario.name,
+                                 "scenario_category": scenario.category,
                                  "border_source": signal["border_flow_source"],
                                  "zhuhai_source": signal["zhuhai_source"],
                                  "ota_source": signal["ota_pace_source"]}),
@@ -505,7 +506,15 @@ def main():
                 hotel["hotel_id"], hotel["star"], _ota_in, _cur_month
             )
             try:
-                r = run_director_crm_test(hotel, signal, real_data, scenario)
+                r = run_director_crm_test(
+                    hotel,
+                    signal,
+                    real_data,
+                    scenario,
+                    source_system="S3",
+                    run_at=run_at,
+                    sim_hour=hour,
+                )
                 anom = detect_anomalies(hotel, r, signal, "DIRECTOR_CRM_ALL")
                 cp = r.get("crm_adjusted_price", 0)
                 crm_scores.append(r.get("integration_score", 0))
@@ -513,7 +522,9 @@ def main():
                     "INSERT INTO hourly_runs VALUES (NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (run_at, hour, hotel["hotel_id"], hotel["name"], "DIRECTOR_CRM_ALL_FC",
                      signal["season"],
-                     json.dumps({"scenario": scenario.name, "psrs_health": scenario.psrs_health}),
+                     json.dumps({"scenario": scenario.name,
+                                 "scenario_category": scenario.category,
+                                 "psrs_health": scenario.psrs_health}),
                      json.dumps({"crm_adjusted_price": cp,
                                  "psrs_status": r.get("psrs_status"),
                                  "integration_score": r.get("integration_score"),
@@ -564,6 +575,7 @@ def main():
                     (run_at, hour, hotel["hotel_id"], hotel["name"], "SELFACQ_ALL_FC",
                      signal["season"],
                      json.dumps({"scenario": scenario.name,
+                                 "scenario_category": scenario.category,
                                  "competitor_mult": scenario.competitor_price_multiplier}),
                      json.dumps({"direct_offer_price": dp,
                                  "ota_standard_price": r.get("ota_standard_price"),
