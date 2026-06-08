@@ -68,7 +68,7 @@ def _days_since(ts_str: str) -> str:
 def _real_market_avgs() -> tuple:
     """
     返回两个独立市场的真实官网BAR均价（近7天，source_ok=1）：
-      low_avg  = 2-3-4★市场（tiers: 3_star, 4_star）
+      low_avg  = 3-4★市场（tiers: 3_star, 4_star）
       high_avg = 5★豪华市场（tiers: 5_star, 5_deluxe）
     """
     conn = _db(COLLECTOR_DB)
@@ -82,7 +82,7 @@ def _real_market_avgs() -> tuple:
             GROUP BY tier
         """).fetchall()
         rm = {r[0]: (r[1], r[2]) for r in rows}
-        # 2-3-4★市场：加权平均 3_star + 4_star
+        # 3-4★市场：加权平均 3_star + 4_star
         low_vals, low_cnts = [], []
         for t in ("3_star", "4_star"):
             if t in rm and rm[t][0]:
@@ -214,7 +214,7 @@ def sys1_section() -> str:
             pass
 
     # 从最新 JSONL 末尾抽样解析定价 KPI（tail 3000行，速度快）
-    # 按市场分组：low=2-3-4★, high=5★豪华
+    # 按市场分组：low=3-4★, high=5★豪华
     mare_low, mare_high = [], []
     dir_prices, acq_prices = [], []
     dir_savings, dir_savings_pct = [], []
@@ -277,8 +277,8 @@ def sys1_section() -> str:
     if mare_low_avg or mare_high_avg:
         if mare_low_avg:
             mare_lines.append(
-                f"- 2-3-4★市场推荐价：{_mop(mare_low_avg)} | "
-                + _vs_market(mare_low_avg, real_low, "2-3-4★市场")
+                f"- 3-4★市场推荐价：{_mop(mare_low_avg)} | "
+                + _vs_market(mare_low_avg, real_low, "3-4★市场")
                 + (f" | 收益提升 {lift_low_avg:.1f}%" if lift_low_avg else "")
             )
         if mare_high_avg:
@@ -399,7 +399,7 @@ def sys2_section() -> str:
         "",
         "**① MARE 房价引擎**",
         f"- 总运行次数：{tot:,} | 运行天数：{days_running} 天 | 失败率：{_pct(tot_a, tot)}",
-        f"- 2-3-4★市场推荐价：{_mop(p23)} | " + _vs_market(p23, real_low, "2-3-4★市场"),
+        f"- 3-4★市场推荐价：{_mop(p23)} | " + _vs_market(p23, real_low, "3-4★市场"),
         f"- 5★豪华市场推荐价：{_mop(p45)} | " + _vs_market(p45, real_high, "5★豪华市场"),
         f"- 综合收益提升：{f'{m[4]:.1f}%' if m and m[4] else 'N/A'}",
         f"- 模拟进度：第 {(max_hour or 0) + 1} / 504 小时（{((max_hour or 0) + 1) / 504 * 100:.0f}%）",
@@ -513,8 +513,8 @@ def sys3_section() -> str:
         "",
         "**① MARE 房价引擎（FC整合版）**",
         f"- 总运行次数：{tot:,} | 运行天数：{days_running} 天 | 失败率：{_pct(tot_a, tot)}",
-        f"- 2-3-4★市场推荐价：{_mop(m_low[2]) if m_low else 'N/A'} | "
-            + _vs_market(m_low[2] if m_low else None, real_low, "2-3-4★市场"),
+        f"- 3-4★市场推荐价：{_mop(m_low[2]) if m_low else 'N/A'} | "
+            + _vs_market(m_low[2] if m_low else None, real_low, "3-4★市场"),
         f"- 5★豪华市场推荐价：{_mop(m_high[2]) if m_high else 'N/A'} | "
             + _vs_market(m_high[2] if m_high else None, real_high, "5★豪华市场"),
         f"- 收益提升：{f'{m[4]:.1f}%' if m and m[4] else 'N/A'} | CrewAI验证：{comp_str}",

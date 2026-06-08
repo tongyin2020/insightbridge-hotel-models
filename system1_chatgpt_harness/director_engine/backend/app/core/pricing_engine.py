@@ -114,8 +114,8 @@ def demand_adjustment(score):
 
 def competition_adjustment(state, competitor_price, our_base, competitor_availability, hotel_star: int = 3):
     # 差异化竞对权重：
-    #   MARE 2-3-4★：淡季不跟价格战(LOW=0.40)，旺季锚定自身(HIGH=0.25)，平季中性(0.50)
-    #   DirectorAI 5★：几乎忽略竞对，品牌溢价优先(LOW=0.15, NORMAL=0.30, HIGH=0.20)
+    #   MARE 3-4★：HIGH=0.25，NORMAL=0.40，LOW=0.50
+    #   DirectorAI 5★：HIGH=0.20，NORMAL=0.15，LOW=0.30
     if competitor_price is None or competitor_price <= 0:
         return 0.0
 
@@ -126,9 +126,9 @@ def competition_adjustment(state, competitor_price, our_base, competitor_availab
     availability_boost = 0.015 if availability > 0.55 else 0.0
 
     if hotel_star >= 5:   # DirectorAI 5★奢华市场：几乎忽略竞对OTA
-        weight = 0.20 if state == "HIGH" else 0.15 if state == "LOW" else 0.30
-    else:                 # MARE 2-3-4★大众市场：淡季不跟价格战
-        weight = 0.25 if state == "HIGH" else 0.40 if state == "LOW" else 0.50
+        weight = 0.20 if state == "HIGH" else 0.30 if state == "LOW" else 0.15
+    else:                 # MARE 3-4★大众市场：低需求更看竞对，正常状态更克制
+        weight = 0.25 if state == "HIGH" else 0.50 if state == "LOW" else 0.40
 
     return round(_clamp(gap_ratio * weight + availability_boost, -0.15, 0.15), 4)
 

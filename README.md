@@ -65,7 +65,7 @@
 
 | 市场 | 星级 | 参考价来源 |
 |------|------|-----------|
-| 2-3-4★市场 | 2/3/4星级酒店 | price_snapshots tier = 3_star + 4_star |
+| 3-4★市场 | 3/4星级酒店 | price_snapshots tier = 3_star + 4_star |
 | 5★豪华市场 | 5星豪华 | price_snapshots tier = 5_star + 5_deluxe |
 
 ---

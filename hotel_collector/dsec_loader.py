@@ -450,42 +450,51 @@ def get_dsec_demand_signal(month: int, star: int,
     返回 DSEC 市场需求信号 ∈ [-1, 1]，供 demand_score() 使用。
 
     计算逻辑：
-      signal = (当月入住率 - 长期均值) / 标准差
+      signal = (该月历史均值 - 历史年均) / 该月历史标准差
       clamped to [-1, 1]
 
     含义：
-      +1.0 = 历史上这个月是旺季（入住率远超均值）
-      0.0  = 历史上这个月入住率与年均持平
-      -1.0 = 历史上这个月是淡季（入住率远低于均值）
+      +1.0 = 这个月份历史上显著高于年均
+      0.0  = 这个月份历史上大致等于年均
+      -1.0 = 这个月份历史上显著低于年均
     """
     _owns = conn is None
     if _owns:
         conn = sqlite3.connect(str(DB_PATH), timeout=5)
     try:
         col = _occ_col(star)
-        # 计算该月的历史均值和标准差（2023-2025）
+        latest_year_row = conn.execute("SELECT MAX(year) FROM dsec_monthly_stats").fetchone()
+        latest_year = int(latest_year_row[0] or 2025)
+        hist_end = latest_year - 1 if latest_year >= 2026 else latest_year
+        hist_start = max(2020, hist_end - 4)
+
+        # 计算该月的历史均值和标准差（最近最多5个历史年份，同月口径）
         rows = conn.execute(
-            f"SELECT {col} FROM dsec_monthly_stats WHERE month=? AND year>=2023",
-            (month,)
+            f"SELECT {col} FROM dsec_monthly_stats WHERE month=? AND year BETWEEN ? AND ?",
+            (month, hist_start, hist_end)
         ).fetchall()
         if not rows:
             return 0.0
         values = [float(r[0]) for r in rows if r[0] is not None]
         if not values:
             return 0.0
-        mean = sum(values) / len(values)
-        # 跨月标准差（全年）
+        month_mean = sum(values) / len(values)
+        if len(values) < 2:
+            return 0.0
+        month_std = math.sqrt(sum((x - month_mean) ** 2 for x in values) / len(values))
+        if month_std < 0.1:
+            return 0.0
+
+        # 历史年均：用于判断这个月份相对全年是偏旺还是偏淡
         all_vals = conn.execute(
-            f"SELECT {col} FROM dsec_monthly_stats WHERE year>=2023 AND {col} IS NOT NULL"
+            f"SELECT {col} FROM dsec_monthly_stats WHERE year BETWEEN ? AND ? AND {col} IS NOT NULL",
+            (hist_start, hist_end)
         ).fetchall()
         all_v = [float(r[0]) for r in all_vals]
-        if len(all_v) < 2:
+        if not all_v:
             return 0.0
         all_mean = sum(all_v) / len(all_v)
-        std = math.sqrt(sum((x - all_mean)**2 for x in all_v) / len(all_v))
-        if std < 0.1:
-            return 0.0
-        signal = (mean - all_mean) / std
+        signal = (month_mean - all_mean) / month_std
         return round(max(-1.0, min(1.0, signal)), 4)
     finally:
         if _owns:

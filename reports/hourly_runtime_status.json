@@ -1,0 +1,32 @@
+{
+  "checked_at": "2026-06-08 13:51:53",
+  "overall_ok": true,
+  "systems": [
+    {
+      "name": "system1",
+      "pid": 87840,
+      "alive": true,
+      "freshness_minutes": 3.8,
+      "ok": true
+    },
+    {
+      "name": "system2",
+      "pid": 87799,
+      "alive": true,
+      "freshness_minutes": 4.0,
+      "ok": true
+    },
+    {
+      "name": "system3",
+      "pid": 87866,
+      "alive": true,
+      "freshness_minutes": 3.7,
+      "ok": true
+    }
+  ],
+  "collector": {
+    "name": "collector_db",
+    "freshness_hours": 2.1,
+    "ok": true
+  }
+}
