@@ -99,7 +99,7 @@ from run_simulation import (
 )
 
 # ── Phase 2 弹性引擎 ──────────────────────────────────────────────────
-_COLLECTOR_DIR_CREWAI = "/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/hotel_collector"
+_COLLECTOR_DIR_CREWAI = str(MODEL_DIR / "hotel_collector")
 if _COLLECTOR_DIR_CREWAI not in sys.path:
     sys.path.insert(0, _COLLECTOR_DIR_CREWAI)
 try:
@@ -117,7 +117,7 @@ except ImportError:
         )
 
 # ── 切换为澳门旅游局官方76家真实酒店 ─────────────────────────────────────────
-_SIM_DIR_MAIN = "/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/system2_claude_simulation"
+_SIM_DIR_MAIN = str(MODEL_DIR / "system2_claude_simulation")
 if _SIM_DIR_MAIN not in sys.path:
     sys.path.insert(0, _SIM_DIR_MAIN)
 try:
@@ -259,11 +259,11 @@ def get_market_signal(sim_hour: int, real_data: dict, fc_data: dict) -> dict:
                           market_sc.sim_ota_booking_pace + _jitter(0.0, 0.03))), 3)
         ota_pace_source = f"scenario_{market_sc.name}"
 
-    # ── DSEC 澳门统计局需求信号 ──────────────────────────────────────────────
+    # ── DSEC 历史需求信号 ────────────────────────────────────────────────
     dsec_market_occ = 0.0
     try:
         import sqlite3 as _sq
-        _RDBP = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/hotel_collector/hotel_real_data.db")
+        _RDBP = MODEL_DIR / "hotel_collector" / "hotel_real_data.db"
         if _RDBP.exists():
             _dc = _sq.connect(str(_RDBP), timeout=5)
             from dsec_loader import get_dsec_demand_signal as _dsec_sig
@@ -275,6 +275,19 @@ def get_market_signal(sim_hour: int, real_data: dict, fc_data: dict) -> dict:
             _dc.close()
     except Exception:
         pass
+
+    # ── MHA 当前月需求信号 ────────────────────────────────────────────────
+    mha_mass_occ = float(real_data.get("mha_occ_mass", 0.0) or 0.0)
+    mha_lux_occ = float(real_data.get("mha_occ_luxury", 0.0) or 0.0)
+    mha_mass_sig = float(real_data.get("mha_signal_mass", 0.0) or 0.0)
+    mha_lux_sig = float(real_data.get("mha_signal_luxury", 0.0) or 0.0)
+    mha_market_occ = round(0.5 * mha_mass_sig + 0.5 * mha_lux_sig, 4)
+    if mha_market_occ > 0.18:
+        mha_demand_state = "HIGH"
+    elif mha_market_occ < -0.12:
+        mha_demand_state = "LOW"
+    else:
+        mha_demand_state = "NORMAL"
 
     # event_density：优先Firecrawl真实抓取，降级到real_data或场景值
     fc_event_density = fc_data.get("event_density_fc")
@@ -302,7 +315,11 @@ def get_market_signal(sim_hour: int, real_data: dict, fc_data: dict) -> dict:
         "event_density":      event_density_val,
         "event_source":       event_source,
         "visitors_stats":     real_data.get("visitors_stats", 0.0),
-        # DSEC 澳门统计局月度需求信号
+        "mha_occ_mass":       mha_mass_occ,
+        "mha_occ_luxury":     mha_lux_occ,
+        "mha_market_occ":     mha_market_occ,
+        "mha_demand_state":   mha_demand_state,
+        # DSEC / MHA 需求信号
         "dsec_market_occ":    dsec_market_occ,
         # 混合信号（FC真实 or 统计模拟）
         "border_flow":        border_flow,

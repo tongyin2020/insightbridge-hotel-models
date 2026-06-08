@@ -29,7 +29,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 
 # ── 路径常量 ─────────────────────────────────────────────────────────────────
-BASE        = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026")
+BASE        = Path(__file__).resolve().parent
 SIM1_DIR    = BASE / "system2_claude_simulation"
 SIM1_SCRIPT = SIM1_DIR / "run_simulation.py"
 SIM1_PID    = SIM1_DIR / "simulation.pid"

@@ -131,10 +131,8 @@ class CompetitorDeviationRule(PolicyRule):
     """Flag if price deviates more than a threshold from competitor set."""
 
     name = "competitor_deviation"
-    # 校准(2026-06-01): 从0.20调整至0.30
-    # DSEC历史均价作为competitor_price基准时，RevPAR优化后的推荐价自然偏高20-40%
-    # 生产环境(competitor_price=实时OTA价)仍适用20%；此处扩容匹配DSEC混合场景
-    max_deviation_pct: float = 0.30  # 30 %
+    # 业务口径(2026-06-08): 竞对偏差超过20%即应报警
+    max_deviation_pct: float = 0.20
 
     def evaluate(self, ctx: PricingContext) -> Optional[Violation]:
         if ctx.competitor_price <= 0:
@@ -272,11 +270,8 @@ class GMApprovalRule(PolicyRule):
     """Require GM approval for large price moves."""
 
     name = "gm_approval"
-    # 校准(2026-06-01): 从0.15调整至0.28
-    # 原设计基准: base_price = 昨日实际价格（生产环境），15%变动属重大调价
-    # DSEC模拟基准: base_price = 6年历史ADR均价（偏低），RevPAR优化天然产生25-50%溢价
-    # 0.28阈值: 合理场景不触发，异常定价（>28%偏离）仍能被捕获
-    threshold_pct: float = 0.28  # >28 % change from base（DSEC场景校准值）
+    # 业务口径(2026-06-08): 大于20%的调价必须走GM审批
+    threshold_pct: float = 0.20
 
     def evaluate(self, ctx: PricingContext) -> Optional[Violation]:
         if ctx.base_price <= 0:

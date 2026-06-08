@@ -19,7 +19,7 @@ from app.auth import require_auth
 from app.services.pricing_engine import recommend
 
 # ── DSEC市场参照价（澳门统计局历史数据）──────────────────────────────────────
-_REAL_DB_PATH = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/hotel_collector/hotel_real_data.db")
+_REAL_DB_PATH = Path(__file__).resolve().parents[5] / "hotel_collector" / "hotel_real_data.db"
 
 def _get_dsec_market_price(star_rating: float) -> float | None:
     """从price_snapshots读取DSEC模拟市场均价（近7天，按星级），

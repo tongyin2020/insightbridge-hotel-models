@@ -49,7 +49,8 @@ class RecommendationRequest(BaseModel):
     guest_satisfaction: Optional[float] = None
     data_freshness_minutes: Optional[float] = None
     ota_prices: Optional[dict[str, float]] = None
-    dsec_market_occ: float = 0.0    # 澳门统计局月度入住率信号（-1~+1，硬核市场数据）
+    dsec_market_occ: float = 0.0    # 澳门统计局历史需求信号（-1~+1）
+    mha_market_occ: float = 0.0     # MHA当前月需求信号（-1~+1）
 
     @field_validator("season")
     @classmethod
@@ -86,6 +87,8 @@ class RecommendationRequest(BaseModel):
         "weather",
         "event_ticket_sales",
         "elasticity_signal",
+        "dsec_market_occ",
+        "mha_market_occ",
     )
     @classmethod
     def validate_signal_band(cls, v: float) -> float:

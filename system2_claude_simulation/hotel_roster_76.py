@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 # ── 导入官方名单 ────────────────────────────────────────────────────────────
-_COLLECTOR_DIR = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/hotel_collector")
+_COLLECTOR_DIR = Path(__file__).resolve().parent.parent / "hotel_collector"
 if str(_COLLECTOR_DIR) not in sys.path:
     sys.path.insert(0, str(_COLLECTOR_DIR))
 

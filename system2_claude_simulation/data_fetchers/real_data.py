@@ -42,8 +42,9 @@ load_dotenv(Path(__file__).parent.parent.parent / ".env")
 logger = logging.getLogger(__name__)
 
 CACHE_DB = Path(__file__).parent.parent / "data_cache.db"
-REAL_DB_PATH = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/hotel_collector/hotel_real_data.db")
-COLLECTOR_DIR = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/hotel_collector")
+MODEL_ROOT = Path(__file__).resolve().parents[2]
+REAL_DB_PATH = MODEL_ROOT / "hotel_collector" / "hotel_real_data.db"
+COLLECTOR_DIR = MODEL_ROOT / "hotel_collector"
 if str(COLLECTOR_DIR) not in sys.path:
     sys.path.insert(0, str(COLLECTOR_DIR))
 
@@ -686,6 +687,30 @@ def get_all_real_signals(checkin: str | None = None, checkout: str | None = None
 
     booking = fetch_booking_prices(checkin, checkout)
     visitors = get_dsec_visitors_signal(now.month)
+    mha_mass_adr = mha_mass_occ = mha_mass_signal = 0.0
+    mha_lux_adr = mha_lux_occ = mha_lux_signal = 0.0
+    mha_period = ""
+    if REAL_DB_PATH.exists():
+        try:
+            from dsec_loader import (
+                get_latest_market_adr,
+                get_latest_market_demand_signal,
+                get_latest_market_occupancy,
+                get_latest_market_snapshot,
+            )
+            _dc = sqlite3.connect(str(REAL_DB_PATH), timeout=5)
+            mha_mass_adr = float(get_latest_market_adr(3, _dc) or 0.0)
+            mha_mass_occ = float(get_latest_market_occupancy(3, _dc) or 0.0)
+            mha_mass_signal = float(get_latest_market_demand_signal(3, _dc) or 0.0)
+            mha_lux_adr = float(get_latest_market_adr(5, _dc) or 0.0)
+            mha_lux_occ = float(get_latest_market_occupancy(5, _dc) or 0.0)
+            mha_lux_signal = float(get_latest_market_demand_signal(5, _dc) or 0.0)
+            latest_snap = get_latest_market_snapshot(3, _dc)
+            if latest_snap:
+                mha_period = f"{int(latest_snap['year']):04d}-{int(latest_snap['month']):02d}"
+            _dc.close()
+        except Exception:
+            pass
 
     # ── Firecrawl 新增因子（3个缺口全部补上）────────────────────────────
     fc_border, fc_border_src   = fetch_firecrawl_border_flow()
@@ -718,6 +743,13 @@ def get_all_real_signals(checkin: str | None = None, checkout: str | None = None
         "flight_ferry": min(1.0, max(-1.0, ferry)),
         "event_ticket_sales": min(0.5, max(-0.1, events)),
         "visitors_stats": visitors,
+        "mha_adr_mass": mha_mass_adr,
+        "mha_occ_mass": mha_mass_occ,
+        "mha_signal_mass": mha_mass_signal,
+        "mha_adr_luxury": mha_lux_adr,
+        "mha_occ_luxury": mha_lux_occ,
+        "mha_signal_luxury": mha_lux_signal,
+        "mha_latest_period": mha_period,
 
         # ── Firecrawl 新增三个缺口因子 ───────────────────────────────
         "border_flow":         fc_border,
@@ -741,6 +773,7 @@ def get_all_real_signals(checkin: str | None = None, checkout: str | None = None
             "flight_ferry": "TurboJET + CotaiWaterJet 双源 (real-time)",
             "event_ticket_sales": f"IR活动缓存 / Firecrawl / optional Playwright ({fc_event_src})",
             "visitors_stats": "DSEC monthly report (encoded)",
+            "mha_market_snapshot": f"MHA monthly report ({mha_period or 'latest available'})",
             "competitor_price": "price_snapshots / Firecrawl / DSEC / optional Playwright",
             "upper_tier_adr": "price_snapshots / Firecrawl / DSEC / optional Playwright",
             "border_flow": f"Firecrawl TDM新闻({fc_border_src})",

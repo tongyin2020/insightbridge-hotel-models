@@ -19,11 +19,11 @@ from pathlib import Path
 from datetime import datetime
 
 # ── 路径配置 ──────────────────────────────────────────────────────────────
-BASE_DIR     = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026")
-SYS2_DB      = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/system2_claude_simulation/results.db")
-SYS3_DB      = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/system3_crewai/crewai_results.db")
-SYS1_OUTDIR  = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/hotel_model_staging_output")
-COLLECTOR_DB = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/hotel_collector/hotel_real_data.db")
+BASE_DIR     = Path(__file__).resolve().parent
+SYS2_DB      = BASE_DIR / "system2_claude_simulation" / "results.db"
+SYS3_DB      = BASE_DIR / "system3_crewai" / "crewai_results.db"
+SYS1_OUTDIR  = BASE_DIR / "hotel_model_staging_output"
+COLLECTOR_DB = BASE_DIR / "hotel_collector" / "hotel_real_data.db"
 REPORT_DIR   = BASE_DIR / "reports" / "daily_model_reports"
 LATEST_REPORT = BASE_DIR / "reports" / "latest_ai_model_daily_report.md"
 TG_OWNER_FILE = Path.home() / "telegram_bot" / "owner_chat_id.txt"

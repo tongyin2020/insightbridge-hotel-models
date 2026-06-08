@@ -13,8 +13,9 @@
     "visitors_stats": 0.08,
     "flight_ferry": 0.05,
     "zhuhai_saturation": 0.12,
-    "ota_booking_pace": 0.07,
+    "ota_booking_pace": 0.05,
     "weather": 0.03,
-    "dsec_market_occ": 0.07
+    "dsec_market_occ": 0.03,
+    "mha_market_occ": 0.1
   }
 }

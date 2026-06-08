@@ -1,9 +1,14 @@
 """
-InsightBridge — 澳门统计暨普查局(DSEC)市场数据加载器
+InsightBridge — 澳门酒店真实市场数据加载器
 dsec_loader.py
 ================================================
-数据来源：澳门旅游局 dataplus.macaotourism.gov.mo 月报
-覆盖：2020-2025年，每月，按3★/4★/5★星级
+数据来源：
+  - DSEC / MGTO 历史月报（2020-2025）
+  - MHA 月度会员酒店数据（2026新增）
+
+用途分工：
+  - MHA 当前月 ADR / Occupancy → 当前市场中心与需求强弱
+  - DSEC 过去两年历史区间     → floor / ceiling 护栏边界
 
 提供两类功能：
   A. DB 初始化 + 种子数据写入（首次运行一次即可）
@@ -23,7 +28,7 @@ import math
 from pathlib import Path
 from typing import Optional
 
-DB_PATH = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/hotel_collector/hotel_real_data.db")
+DB_PATH = Path(__file__).resolve().parent / "hotel_real_data.db"
 
 # ══════════════════════════════════════════════════════════════════════════
 #  历史数据（2020-2025，来源：澳门旅游局月报 PDF 提取）
@@ -107,6 +112,9 @@ _RAW_DATA = [
     (2025,10,93.3,94.2,88.9,96.1,1413,1572,1181,931),
     (2025,11,93.9,94.2,91.2,97.2,1325,1481,1077,901),
     (2025,12,94.4,95.2,90.3,97.2,1392,1552,1132,949),
+    # 2026（MHA 月报）
+    (2026,1,94.8,95.8,90.1,97.7,1359.4,1522.5,1105.5,898.3),
+    (2026,2,96.0,96.6,93.3,97.6,1416.7,1560.0,1233.5,949.8),
 ]
 
 
@@ -165,6 +173,21 @@ def _adr_col(star: int) -> str:
     return {5: "star5_adr_mop", 4: "star4_adr_mop", 3: "star3_adr_mop"}.get(star, "all_adr_mop")
 
 
+def _market_group(star: int) -> str:
+    return "luxury" if int(star or 0) >= 5 else "mass"
+
+
+def _group_monthly_metric(row: tuple, metric: str, market_group: str) -> float | None:
+    if not row:
+        return None
+    all_occ, star5_occ, star4_occ, star3_occ, all_adr, star5_adr, star4_adr, star3_adr = row
+    if market_group == "luxury":
+        return float(star5_occ if metric == "occ" else star5_adr)
+    if metric == "occ":
+        return round((float(star3_occ) + float(star4_occ)) / 2.0, 4)
+    return round((float(star3_adr) + float(star4_adr)) / 2.0, 4)
+
+
 def get_market_occupancy(month: int, star: int,
                          conn: Optional[sqlite3.Connection] = None,
                          year: int = None) -> Optional[float]:
@@ -214,6 +237,164 @@ def get_market_adr(month: int, star: int,
                 (month,)
             ).fetchone()
             return round(float(row[0]), 1) if row and row[0] else None
+    finally:
+        if _owns:
+            conn.close()
+
+
+def get_latest_market_snapshot(
+    star: int,
+    conn: Optional[sqlite3.Connection] = None,
+) -> dict[str, float | int | str] | None:
+    """
+    返回最新一期可用 MHA / DSEC 月度快照。
+    3★+4★ 视为 mass 市场；5★ 视为 luxury 市场。
+    """
+    _owns = conn is None
+    if _owns:
+        conn = sqlite3.connect(str(DB_PATH), timeout=5)
+    try:
+        row = conn.execute(
+            """
+            SELECT year, month,
+                   all_occ_pct, star5_occ_pct, star4_occ_pct, star3_occ_pct,
+                   all_adr_mop, star5_adr_mop, star4_adr_mop, star3_adr_mop,
+                   source
+            FROM dsec_monthly_stats
+            ORDER BY year DESC, month DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if not row:
+            return None
+        market_group = _market_group(star)
+        metrics_row = row[2:10]
+        occ_pct = _group_monthly_metric(metrics_row, "occ", market_group)
+        adr_mop = _group_monthly_metric(metrics_row, "adr", market_group)
+        if occ_pct is None or adr_mop is None:
+            return None
+        return {
+            "year": int(row[0]),
+            "month": int(row[1]),
+            "market_group": market_group,
+            "occupancy": round(float(occ_pct) / 100.0, 4),
+            "adr": round(float(adr_mop), 1),
+            "source": str(row[10] or "DSEC_MHA"),
+        }
+    finally:
+        if _owns:
+            conn.close()
+
+
+def get_latest_market_adr(star: int, conn: Optional[sqlite3.Connection] = None) -> Optional[float]:
+    snap = get_latest_market_snapshot(star, conn)
+    return float(snap["adr"]) if snap else None
+
+
+def get_latest_market_occupancy(star: int, conn: Optional[sqlite3.Connection] = None) -> Optional[float]:
+    snap = get_latest_market_snapshot(star, conn)
+    return float(snap["occupancy"]) if snap else None
+
+
+def get_market_group_floor_ceiling(
+    star: int,
+    conn: Optional[sqlite3.Connection] = None,
+    years_back: int = 2,
+) -> tuple[float, float]:
+    """
+    用过去 N 年历史数据给市场组生成 floor / ceiling。
+    规则：
+      - 3★+4★ 共用一个 mass 区间
+      - 5★ 单独一个 luxury 区间
+      - floor  = 每年最低月均 ADR 的平均
+      - ceiling = 每年最高月均 ADR 的平均
+    """
+    _owns = conn is None
+    if _owns:
+        conn = sqlite3.connect(str(DB_PATH), timeout=5)
+    try:
+        latest_year_row = conn.execute("SELECT MAX(year) FROM dsec_monthly_stats").fetchone()
+        latest_year = int(latest_year_row[0] or 2025)
+        hist_end = latest_year - 1 if latest_year >= 2026 else latest_year
+        hist_start = max(2020, hist_end - years_back + 1)
+        rows = conn.execute(
+            """
+            SELECT year,
+                   all_occ_pct, star5_occ_pct, star4_occ_pct, star3_occ_pct,
+                   all_adr_mop, star5_adr_mop, star4_adr_mop, star3_adr_mop
+            FROM dsec_monthly_stats
+            WHERE year BETWEEN ? AND ?
+            ORDER BY year, month
+            """,
+            (hist_start, hist_end),
+        ).fetchall()
+        market_group = _market_group(star)
+        by_year: dict[int, list[float]] = {}
+        for row in rows:
+            yr = int(row[0])
+            adr = _group_monthly_metric(row[1:], "adr", market_group)
+            if adr is None:
+                continue
+            by_year.setdefault(yr, []).append(float(adr))
+
+        yearly_lows: list[float] = []
+        yearly_highs: list[float] = []
+        for values in by_year.values():
+            if not values:
+                continue
+            yearly_lows.append(min(values))
+            yearly_highs.append(max(values))
+
+        if not yearly_lows or not yearly_highs:
+            if market_group == "luxury":
+                return 1200.0, 2200.0
+            return 700.0, 1200.0
+
+        floor_price = round(sum(yearly_lows) / len(yearly_lows), 1)
+        ceiling_price = round(sum(yearly_highs) / len(yearly_highs), 1)
+        if ceiling_price <= floor_price:
+            ceiling_price = floor_price * 1.15
+        return floor_price, ceiling_price
+    finally:
+        if _owns:
+            conn.close()
+
+
+def get_latest_market_demand_signal(star: int, conn: Optional[sqlite3.Connection] = None) -> float:
+    """
+    当前 MHA 入住率相对过去两年同市场整体均值的标准化信号，返回 [-1, 1]。
+    """
+    _owns = conn is None
+    if _owns:
+        conn = sqlite3.connect(str(DB_PATH), timeout=5)
+    try:
+        snap = get_latest_market_snapshot(star, conn)
+        if not snap:
+            return 0.0
+        market_group = _market_group(star)
+        latest_occ_pct = float(snap["occupancy"]) * 100.0
+        latest_year = int(snap["year"])
+        hist_end = latest_year - 1 if latest_year >= 2026 else latest_year
+        hist_start = max(2020, hist_end - 1)
+        rows = conn.execute(
+            """
+            SELECT all_occ_pct, star5_occ_pct, star4_occ_pct, star3_occ_pct,
+                   all_adr_mop, star5_adr_mop, star4_adr_mop, star3_adr_mop
+            FROM dsec_monthly_stats
+            WHERE year BETWEEN ? AND ?
+            """,
+            (hist_start, hist_end),
+        ).fetchall()
+        values = [float(_group_monthly_metric(row, "occ", market_group)) for row in rows]
+        values = [v for v in values if v > 0]
+        if len(values) < 2:
+            return 0.0
+        mean = sum(values) / len(values)
+        std = math.sqrt(sum((x - mean) ** 2 for x in values) / len(values))
+        if std < 0.1:
+            return 0.0
+        signal = (latest_occ_pct - mean) / std
+        return round(max(-1.0, min(1.0, signal)), 4)
     finally:
         if _owns:
             conn.close()

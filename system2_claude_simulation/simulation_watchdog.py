@@ -2,7 +2,7 @@
 InsightBridge — 模拟系统守护进程
 ===================================
 监控 run_simulation.py 是否正在运行。
-若进程消失或数据库停止更新（超过 2 小时），自动重启并推送企业微信通知。
+若进程消失或数据库停止更新（超过 2 小时），自动重启。
 
 运行方式（后台持续运行）：
   nohup python3 simulation_watchdog.py > watchdog.log 2>&1 &
@@ -23,8 +23,6 @@ WATCHDOG_PID = BASE_DIR / "watchdog.pid"
 DB_PATH      = BASE_DIR / "results.db"
 LOG_PATH     = BASE_DIR / "watchdog.log"
 
-WECOM_PATH   = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/Hotel_Model_Rvisions/wecom_push.py")
-
 # ── 参数 ───────────────────────────────────────────────────────────────────
 CHECK_INTERVAL  = 300    # 每 5 分钟检查一次
 STALL_THRESHOLD = 7200   # 数据库超过 2 小时未更新 → 判定为卡死
@@ -40,14 +38,9 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
-# ── WeCom 推送 ─────────────────────────────────────────────────────────────
+# ── 旧通知接口（已停用，仅保留兼容入口）──────────────────────────────────────
 def _push(msg: str):
-    try:
-        sys.path.insert(0, str(WECOM_PATH.parent))
-        from wecom_push import push_markdown
-        push_markdown(msg)
-    except Exception as e:
-        log.warning(f"WeCom 推送失败: {e}")
+    return None
 
 
 # ── 进程检查 ───────────────────────────────────────────────────────────────

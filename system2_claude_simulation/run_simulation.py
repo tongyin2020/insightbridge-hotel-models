@@ -73,7 +73,7 @@ except Exception as _v6_err:
     print(f"⚠ HROS V6 未加载（继续V5）: {_v6_err}")
 
 # ── 真实数据库路径（hotel_real_data.db）───────────────────────────────────────
-_REAL_DB_PATH = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/hotel_collector/hotel_real_data.db")
+_REAL_DB_PATH = _MODEL_ROOT / "hotel_collector" / "hotel_real_data.db"
 
 # ── 双层OTA折算系数（OTA价 × 此系数 ≈ 官网BAR）
 _OTA_TO_BAR_MASS    = 0.85   # 3-4★ 大众市场
@@ -82,7 +82,7 @@ _BAR_WEIGHT = {3: 0.55, 4: 0.55, 5: 0.70}   # 历史参考权重
 _OTA_WEIGHT = {3: 0.45, 4: 0.45, 5: 0.30}   # 实时OTA权重
 
 # ── 声誉情感引擎 + DSEC数据（hotel_collector目录）────────────────────────────
-_COLLECTOR_DIR = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/hotel_collector")
+_COLLECTOR_DIR = _MODEL_ROOT / "hotel_collector"
 if str(_COLLECTOR_DIR) not in sys.path:
     sys.path.insert(0, str(_COLLECTOR_DIR))
 
@@ -120,19 +120,13 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
                                 ota_snapshot_price: float,
                                 month: int = None) -> float:
     """
-    动态计算 base_price，替代随机数方式：
-      Step A — 历史参考价（四层优先级）：
-               层1 Shifter真实BAR(85%) + DSEC(15%) → 混合OTA权重
-               层2 Shifter OTA折算BAR(85%) + DSEC(15%) → 混合OTA权重
-               层3 冷启动：DSEC统计局(100%)，不与其他外部价格混合
-               层4 完全冷启动兜底：OTA估算×0.97
-      Step B — 星级范围截断
+    动态计算 base_price：
+      Step A — 当前市场中心价：优先使用 MHA 最新月度 ADR
+               3★+4★ → mass 市场
+               5★    → luxury 市场
+      Step B — 若 MHA 缺失，再降级到 DSEC 月度 ADR / OTA 估算
       Step C — 声誉情感修正 rep_adj ∈ [-0.17, +0.17]
       Step D — 库存紧张溢价（avail_level: critical/low/moderate）
-
-    OTA权重按需求档位差异化（淡季不跟价格战，旺季锚定自身BAR）：
-      大众(3-4★): LOW=0.40 / NORMAL=0.50 / HIGH=0.25
-      豪华(5★):   LOW=0.15 / NORMAL=0.30 / HIGH=0.20
     """
     if month is None:
         month = datetime.now().month
@@ -140,44 +134,13 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
     tier = {3: "3_star", 4: "4_star", 5: "5_star"}.get(star, "3_star")
     ratio = _OTA_TO_BAR_LUXURY if star == 5 else _OTA_TO_BAR_MASS
     ota_estimate = max(ota_snapshot_price * ratio, 100.0)
-    # 静态基础权重（后续按需求档位覆盖）
-    w_bar = _BAR_WEIGHT.get(star, 0.55)
-    w_ota = _OTA_WEIGHT.get(star, 0.45)
-
-    real_bar_avg  = None   # 来自hotel_real_data.db price_snapshots（轨道A：官网BAR）
-    real_ota_avg  = None   # 来自hotel_real_data.db price_snapshots（轨道B：OTA竞对）
     dsec_adr_ref  = 0.0
+    mha_adr_ref   = 0.0
     shared_conn   = None
 
     if _REAL_DB_PATH.exists():
         try:
             shared_conn = sqlite3.connect(str(_REAL_DB_PATH), timeout=5)
-
-            # ── 层1：Shifter采集的真实官网BAR（最近7天快照，同月份入住日期）
-            row = shared_conn.execute("""
-                SELECT AVG(official_bar), COUNT(*)
-                FROM price_snapshots
-                WHERE hotel_id = ?
-                  AND official_bar > 200
-                  AND source_ok = 1
-                  AND CAST(strftime('%m', checkin_date) AS INTEGER) = ?
-                  AND snapshot_time >= datetime('now', '-7 days')
-            """, (hotel_id, month)).fetchone()
-            if row and row[1] and row[1] >= 1:
-                real_bar_avg = float(row[0])
-
-            # ── 层2备用：Booking.com OTA竞对价（最近7天）
-            row_ota = shared_conn.execute("""
-                SELECT AVG(booking_rate), COUNT(*)
-                FROM price_snapshots
-                WHERE hotel_id = ?
-                  AND booking_rate > 200
-                  AND CAST(strftime('%m', checkin_date) AS INTEGER) = ?
-                  AND snapshot_time >= datetime('now', '-7 days')
-            """, (hotel_id, month)).fetchone()
-            if row_ota and row_ota[1] and row_ota[1] >= 1:
-                real_ota_avg = float(row_ota[0])
-
         except Exception:
             pass
 
@@ -185,57 +148,23 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
         try:
             _dc = shared_conn or sqlite3.connect(str(_REAL_DB_PATH), timeout=5)
             dsec_adr_ref = _dsec_market_adr(month, star, _dc)
+            from dsec_loader import get_latest_market_adr as _mha_latest_adr
+            mha_adr_ref = float(_mha_latest_adr(star, _dc) or 0.0)
             if not shared_conn:
                 _dc.close()
         except Exception:
             pass
 
-    # ── 需求档位差异化OTA权重（覆盖静态权重）────────────────────────────────
-    # 淡季不跟随OTA价格战；旺季自身BAR主导，OTA权重反而降低
-    # 大众(3-4★): LOW→0.40, NORMAL→0.50, HIGH→0.25
-    # 豪华(5★):   LOW→0.15, NORMAL→0.30, HIGH→0.20
-    _DEMAND_OTA_W = {
-        ("mass",   "LOW"):    0.40, ("mass",   "NORMAL"): 0.40, ("mass",   "HIGH"): 0.25,
-        ("luxury", "LOW"):    0.15, ("luxury", "NORMAL"): 0.30, ("luxury", "HIGH"): 0.20,
-    }
-    demand_level = "NORMAL"
-    if _DSEC_OK and shared_conn:
-        try:
-            from dsec_loader import get_dsec_demand_signal as _dsec_sig
-            sig = _dsec_sig(month, star, shared_conn)   # [-1, +1]
-            demand_level = "HIGH" if sig > 0.15 else ("LOW" if sig < -0.15 else "NORMAL")
-        except Exception:
-            pass
-    seg = "luxury" if star >= 5 else "mass"
-    w_ota = _DEMAND_OTA_W.get((seg, demand_level), w_ota)
-    w_bar = 1.0 - w_ota
-
-    # ── 四层优先级定价参考 ────────────────────────────────────────────────
-    # 层1：Shifter真实官网BAR → 85%BAR + 15%DSEC背景，再与OTA权重混合
-    # 层2：Shifter真实OTA价折算BAR → 85%折算BAR + 15%DSEC，再与OTA权重混合
-    # 层3：冷启动 — DSEC统计局100%作为唯一历史参考
-    # 层4：完全冷启动兜底（无任何真实数据）
-    if real_bar_avg is not None:
-        # 层1：有Shifter真实BAR — 85%真实BAR + 15%DSEC市场背景
-        historical_ref = (0.75 * real_bar_avg + 0.25 * dsec_adr_ref
-                          if dsec_adr_ref > 0 else real_bar_avg)
-        base = w_bar * historical_ref + w_ota * ota_estimate
-    elif real_ota_avg is not None:
-        # 层2：有Shifter OTA价 — 折算BAR：85%折算BAR + 15%DSEC
-        ota_bar_est = real_ota_avg * ratio
-        historical_ref = (0.75 * ota_bar_est + 0.25 * dsec_adr_ref
-                          if dsec_adr_ref > 0 else ota_bar_est)
-        base = w_bar * historical_ref + w_ota * ota_estimate
+    if mha_adr_ref > 0:
+        base = mha_adr_ref
     elif dsec_adr_ref > 0:
-        # 层3：冷启动 — DSEC统计局为唯一历史参考
         base = dsec_adr_ref
     else:
-        # 层4：完全冷启动兜底（无真实数据）
         base = ota_estimate * 0.97
 
-    # Step B：星级范围截断
-    clamp_ranges = {2: (200, 900), 3: (400, 1400), 4: (800, 3000), 5: (1500, 8000)}
-    lo, hi = clamp_ranges.get(star, (200, 8000))
+    # Step B：使用 DSEC 过去两年历史边界做区间截断
+    settings = _hotel_settings({"star": star})
+    lo, hi = float(settings.floor_price), float(settings.ceiling_price)
     base = max(lo, min(hi, base))
 
     # Step C：声誉情感修正（review_sentiment + google_ratings 双源）
@@ -281,30 +210,12 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
     return round(base / 10) * 10
 
 # ── 企业微信推送（非阻塞，不影响模拟运行）────────────────────────────────────
-_WECOM_PUSH_PATH = Path(__file__).parent.parent / "wecom_push.py"
 _last_critical_alert  = 0   # 防刷屏：CRITICAL 最多每2小时一次
 _last_metrics_push    = 0   # 防刷屏：表现快报 最多每6小时一次
 
 def _wecom_push_async(content: str):
-    """企业微信推送（非阻塞后台线程，不影响模拟运行）
-    策略：每日汇总 + CRITICAL 告警推送；每小时快报已禁用防刷屏。
-    重新启用：2026-06-05（修复：之前误禁导致日报停发）
-    """
-    import threading, subprocess
-    def _push():
-        try:
-            wecom_script = str(Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/Hotel_Model_Rvisions/wecom_push.py"))
-            if not Path(wecom_script).exists():
-                return
-            # P1 FIX: 使用 stdin 传递 content，避免命令行长度超过 ARG_MAX（macOS ~256KB）
-            subprocess.run(
-                [sys.executable, wecom_script],
-                input=content.encode("utf-8"),
-                capture_output=True, timeout=30
-            )
-        except Exception:
-            pass
-    threading.Thread(target=_push, daemon=True).start()
+    """旧企业微信通道已废弃，保留空实现以兼容历史调用。"""
+    return None
 
 def _normalize_anomalies(raw) -> list[str]:
     if not raw:
@@ -692,14 +603,29 @@ from objective_modes import ObjectiveMode, apply_objective_adjustment, get_objec
 from recommendations import RecommendationRequest
 from types import SimpleNamespace
 
-# ── 星级专属护栏配置（防止低/高端酒店因默认护栏MOP750-1015触发虚假违规）──────────
+# ── 市场组专属护栏配置（DSEC过去两年历史区间）───────────────────────────────
 _STAR_GUARDRAIL = {
-    3: SimpleNamespace(floor_price=420,  ceiling_price=1600),
-    4: SimpleNamespace(floor_price=750,  ceiling_price=3500),
-    5: SimpleNamespace(floor_price=1200, ceiling_price=8000),
+    3: SimpleNamespace(floor_price=700,  ceiling_price=1200),
+    4: SimpleNamespace(floor_price=700,  ceiling_price=1200),
+    5: SimpleNamespace(floor_price=1200, ceiling_price=2200),
 }
+
+
+def _market_group(star: int) -> str:
+    return "luxury" if int(star or 0) >= 5 else "mass"
+
+
 def _hotel_settings(hotel: dict):
-    """返回与酒店星级匹配的护栏设置对象（模拟per-hotel配置）。"""
+    """返回酒店对应市场组的历史 floor / ceiling 护栏。"""
+    if _REAL_DB_PATH.exists():
+        try:
+            from dsec_loader import get_market_group_floor_ceiling
+            _dc = sqlite3.connect(str(_REAL_DB_PATH), timeout=5)
+            floor_price, ceiling_price = get_market_group_floor_ceiling(hotel.get("star", 3), _dc)
+            _dc.close()
+            return SimpleNamespace(floor_price=float(floor_price), ceiling_price=float(ceiling_price))
+        except Exception:
+            pass
     return _STAR_GUARDRAIL.get(hotel.get("star", 3), _STAR_GUARDRAIL[3])
 
 # ── 配置 ──────────────────────────────────────────────────────────────────────
@@ -907,7 +833,7 @@ def get_macau_market_signal(sim_hour: int, real_data: dict) -> dict:
                   market_scenario.sim_ota_booking_pace + _jitter(0.0, 0.03))), 3)
     ota_pace_source = f"scenario_{market_scenario.name}"
 
-    # ── DSEC 澳门统计局需求信号（3/4/5★加权混合）──────────────────────────
+    # ── DSEC 历史需求信号（长期底盘）─────────────────────────────────────
     dsec_market_occ = 0.0
     if _DSEC_OK and _REAL_DB_PATH.exists():
         try:
@@ -921,6 +847,19 @@ def get_macau_market_signal(sim_hour: int, real_data: dict) -> dict:
             _dc.close()
         except Exception:
             pass
+
+    # ── MHA 当前月需求信号（当前主锚）──────────────────────────────────────
+    mha_mass_occ = float(real_data.get("mha_occ_mass", 0.0) or 0.0)
+    mha_lux_occ = float(real_data.get("mha_occ_luxury", 0.0) or 0.0)
+    mha_mass_sig = float(real_data.get("mha_signal_mass", 0.0) or 0.0)
+    mha_lux_sig = float(real_data.get("mha_signal_luxury", 0.0) or 0.0)
+    mha_market_occ = round(0.5 * mha_mass_sig + 0.5 * mha_lux_sig, 4)
+    if mha_market_occ > 0.18:
+        mha_demand_state = "HIGH"
+    elif mha_market_occ < -0.12:
+        mha_demand_state = "LOW"
+    else:
+        mha_demand_state = "NORMAL"
 
     # ── 合并信号 ──────────────────────────────────────────────────────────
     weather_c = real_data.get("weather_celsius", 25.0)
@@ -938,8 +877,12 @@ def get_macau_market_signal(sim_hour: int, real_data: dict) -> dict:
         "flight_ferry":      real_data.get("flight_ferry", 0.1),
         "event_ticket_sales":real_data.get("event_ticket_sales", 0.0),
         "visitors_stats":    real_data.get("visitors_stats", 0.0),
+        "mha_occ_mass":      mha_mass_occ,
+        "mha_occ_luxury":    mha_lux_occ,
+        "mha_market_occ":    mha_market_occ,
+        "mha_demand_state":  mha_demand_state,
 
-        # DSEC 澳门统计局月度需求信号（硬核市场数据）
+        # DSEC / MHA 需求信号
         "dsec_market_occ":   dsec_market_occ,
 
         # 混合信号（场景模拟）
@@ -1009,8 +952,9 @@ def run_3star_test(hotel: dict, signal: dict, real_data: dict,
         booking_velocity_24h=scenario.booking_velocity_24h,
         days_to_arrival=scenario.days_to_arrival,
         cancellation_rate=scenario.cancellation_rate,
-        # DSEC 澳门统计局月度需求信号
+        # DSEC / MHA 需求信号
         dsec_market_occ=signal.get("dsec_market_occ", 0.0),
+        mha_market_occ=signal.get("mha_market_occ", 0.0),
     )
     result = pe.recommend(req, hotel_settings=_hotel_settings(hotel))
 
@@ -1020,8 +964,10 @@ def run_3star_test(hotel: dict, signal: dict, real_data: dict,
                      if real_prices else hotel["base_price"])
         # 修复(2026-06-02 P3-A): 防止OTA淡季低价(≤500 MOP)将搜索基准拉至不合理水平
         # DSEC后疫情3★年均ADR≈950 MOP；低季节最低合理参考 = 950×0.70 = 665，取整680
-        _mkt_floor = {3: 680, 4: 900, 5: 1400}
-        mkt_price = max(mkt_price, _mkt_floor.get(hotel.get("star", 3), 680))
+        _guardrail = _hotel_settings(hotel)
+        _mkt_floor = float(_guardrail.floor_price)
+        _mkt_ceil = float(_guardrail.ceiling_price)
+        mkt_price = min(max(mkt_price, _mkt_floor), _mkt_ceil)
         er = _elasticity_optimize(
             candidate_price = result["recommended_price"],
             market_price    = mkt_price,
@@ -1044,8 +990,9 @@ def run_3star_test(hotel: dict, signal: dict, real_data: dict,
         try:
             _v6_mkt = (float(sum(real_prices) / len(real_prices))
                        if real_prices else hotel["base_price"])
-            _v6_floor = {3: 680, 4: 900, 5: 1400}.get(hotel.get("star", 3), 680)
-            _v6_ceil  = max(result.get("recommended_price", 0) * 2.0, _v6_floor * 4)
+            _guardrail = _hotel_settings(hotel)
+            _v6_floor = float(_guardrail.floor_price)
+            _v6_ceil  = max(float(_guardrail.ceiling_price), _v6_floor * 1.05)
             _v6_occ   = scenario.occupancy
             _v6_dq    = 1.0 if real_prices else 0.6
             result = apply_v6_to_mare_output(
@@ -1168,7 +1115,7 @@ def run_45star_test(hotel: dict, signal: dict, real_data: dict,
         "direct_bias": direct_bias,
         "bundle_aggressiveness": bundle_aggr,
         "occupancy": occupancy,
-        "demand_high": signal["is_holiday"] or signal["is_weekend"],
+        "demand_high": signal["is_holiday"] or signal["is_weekend"] or signal.get("mha_demand_state") == "HIGH",
     }
 
     result = apply_selfacq_profit_guard(result, hotel, scenario)
@@ -1184,7 +1131,7 @@ def run_45star_test(hotel: dict, signal: dict, real_data: dict,
             market_price    = mkt_price,
             star            = hotel.get("star", 4),
             district        = hotel.get("district", "NAPE"),
-            demand_level    = "HIGH" if result["demand_high"] else "NORMAL",
+            demand_level    = "HIGH" if result["demand_high"] else signal.get("mha_demand_state", "NORMAL"),
             season          = signal.get("season", "normal"),
             hotel_id        = hotel.get("hotel_id"),
         )
@@ -1354,7 +1301,7 @@ def run_director_crm_test(hotel: dict, signal: dict, real_data: dict,
         "ota_commission_saved": ota_commission_saved,
         "integration_score":    integration_score,
         "occupancy":            occupancy,
-        "demand_high":          signal["is_holiday"] or signal["is_weekend"],
+        "demand_high":          signal["is_holiday"] or signal["is_weekend"] or signal.get("mha_demand_state") == "HIGH",
         "crm_v6_guardrail":     result_crm_guardrail,
         "director_feedback_avg": round(feedback_signal.avg_score, 4),
         "director_feedback_samples": feedback_signal.samples,

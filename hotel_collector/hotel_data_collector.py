@@ -61,12 +61,13 @@ except ImportError:
 
 # ── 路径 & 配置 ────────────────────────────────────────────────────────────
 BASE_DIR   = Path(__file__).parent
+MODEL_ROOT = BASE_DIR.parent
 DB_PATH    = BASE_DIR / "hotel_real_data.db"
 LOG_PATH   = BASE_DIR / "collector.log"
 ENV_FILES = [
-    Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/.env"),
-    Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/system2_claude_simulation/.env"),
-    Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/system3_crewai/.env"),
+    MODEL_ROOT / ".env",
+    MODEL_ROOT / "system2_claude_simulation" / ".env",
+    MODEL_ROOT / "system3_crewai" / ".env",
 ]
 
 for _env_file in ENV_FILES:

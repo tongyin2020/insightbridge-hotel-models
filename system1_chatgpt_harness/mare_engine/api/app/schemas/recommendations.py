@@ -53,6 +53,8 @@ class RecommendationRequest(BaseModel):
     guest_satisfaction: Optional[float] = None  # 0-5
     data_freshness_minutes: Optional[float] = None
     ota_prices: Optional[dict[str, float]] = None  # channel -> price
+    dsec_market_occ: float = 0.0
+    mha_market_occ: float = 0.0
 
     @field_validator("season")
     @classmethod

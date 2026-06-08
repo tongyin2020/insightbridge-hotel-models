@@ -45,7 +45,7 @@ from typing import NamedTuple
 from functools import lru_cache
 
 log = logging.getLogger("elasticity")
-_V6_PROFILE_PATH = Path("/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/共用_HROS_V6引擎/hotel_profiles_v6.json")
+_V6_PROFILE_PATH = Path(__file__).resolve().parent.parent / "共用_HROS_V6引擎" / "hotel_profiles_v6.json"
 
 # ── 星级价格护栏（MOP）────────────────────────────────────────────────────────
 _PRICE_FLOOR   = {3: 680,  4: 750,  5: 1200}
