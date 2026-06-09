@@ -51,6 +51,7 @@ class RecommendationRequest(BaseModel):
     ota_prices: Optional[dict[str, float]] = None
     dsec_market_occ: float = 0.0    # 澳门统计局历史需求信号（-1~+1）
     mha_market_occ: float = 0.0     # MHA当前月需求信号（-1~+1）
+    blended_market_demand_signal: float = 0.0  # DSEC 40% + MHA 60%
 
     @field_validator("season")
     @classmethod
@@ -89,6 +90,7 @@ class RecommendationRequest(BaseModel):
         "elasticity_signal",
         "dsec_market_occ",
         "mha_market_occ",
+        "blended_market_demand_signal",
     )
     @classmethod
     def validate_signal_band(cls, v: float) -> float:

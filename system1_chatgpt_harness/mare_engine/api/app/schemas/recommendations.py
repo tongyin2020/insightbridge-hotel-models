@@ -56,6 +56,7 @@ class RecommendationRequest(BaseModel):
     ota_prices: Optional[dict[str, float]] = None  # channel -> price
     dsec_market_occ: float = 0.0
     mha_market_occ: float = 0.0
+    blended_market_demand_signal: float = 0.0
 
     @field_validator("season")
     @classmethod
@@ -79,6 +80,27 @@ class RecommendationRequest(BaseModel):
     def validate_occupancy(cls, v: float) -> float:
         if v < 0 or v > 1:
             raise ValueError("Occupancy must be between 0 and 1")
+        return v
+
+    @field_validator(
+        "holiday",
+        "weekend",
+        "border_flow",
+        "visitors_stats",
+        "flight_ferry",
+        "zhuhai_saturation",
+        "ota_booking_pace",
+        "weather",
+        "event_ticket_sales",
+        "elasticity_signal",
+        "dsec_market_occ",
+        "mha_market_occ",
+        "blended_market_demand_signal",
+    )
+    @classmethod
+    def validate_signal_band(cls, v: float) -> float:
+        if v < -1 or v > 1:
+            raise ValueError("Signal inputs must be between -1 and 1")
         return v
 
     @field_validator("hotel_id")

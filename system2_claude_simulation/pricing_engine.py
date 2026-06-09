@@ -36,8 +36,8 @@ DEFAULT_WEIGHTS = {
         "zhuhai_saturation": 0.12,
         "ota_booking_pace": 0.05,
         "weather": 0.03,            # ↓0.02 腾出DSEC权重
-        "dsec_market_occ": 0.03,    # 澳门统计局历史需求底盘
-        "mha_market_occ": 0.10,     # MHA当前月入住率信号（当前需求主锚）
+        "dsec_market_occ": 0.04,    # 澳门统计局历史需求底盘
+        "mha_market_occ": 0.09,     # MHA当前月入住率信号（当前需求主锚）
     },
 }
 

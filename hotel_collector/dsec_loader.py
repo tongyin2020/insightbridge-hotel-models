@@ -177,6 +177,38 @@ def _market_group(star: int) -> str:
     return "luxury" if int(star or 0) >= 5 else "mass"
 
 
+def _historical_window(conn: sqlite3.Connection) -> tuple[int, int]:
+    """
+    统一历史参考窗口：
+      起点固定为 2023（后疫情恢复期）
+      终点固定为最新年份的上一年
+    若库内最高年份 <= 2025，则终点使用该最新年份本身。
+    """
+    latest_year_row = conn.execute("SELECT MAX(year) FROM dsec_monthly_stats").fetchone()
+    latest_year = int(latest_year_row[0] or 2025)
+    hist_end = latest_year - 1 if latest_year >= 2026 else latest_year
+    hist_start = 2023
+    if hist_end < hist_start:
+        hist_end = hist_start
+    return hist_start, hist_end
+
+
+def _percentile(values: list[float], q: float) -> float:
+    if not values:
+        raise ValueError("values must not be empty")
+    if len(values) == 1:
+        return float(values[0])
+    q = max(0.0, min(1.0, q))
+    ordered = sorted(float(v) for v in values)
+    pos = (len(ordered) - 1) * q
+    lo = int(math.floor(pos))
+    hi = int(math.ceil(pos))
+    if lo == hi:
+        return ordered[lo]
+    frac = pos - lo
+    return ordered[lo] * (1.0 - frac) + ordered[hi] * frac
+
+
 def _group_monthly_metric(row: tuple, metric: str, market_group: str) -> float | None:
     if not row:
         return None
@@ -205,9 +237,10 @@ def get_market_occupancy(month: int, star: int,
                                (year, month)).fetchone()
             return float(row[0]) / 100.0 if row and row[0] else None
         else:
+            hist_start, hist_end = _historical_window(conn)
             row = conn.execute(
-                f"SELECT AVG({col}) FROM dsec_monthly_stats WHERE month=? AND year>=2023",
-                (month,)
+                f"SELECT AVG({col}) FROM dsec_monthly_stats WHERE month=? AND year BETWEEN ? AND ?",
+                (month, hist_start, hist_end)
             ).fetchone()
             return float(row[0]) / 100.0 if row and row[0] else None
     finally:
@@ -232,9 +265,10 @@ def get_market_adr(month: int, star: int,
                                (year, month)).fetchone()
             return round(float(row[0]), 1) if row and row[0] else None
         else:
+            hist_start, hist_end = _historical_window(conn)
             row = conn.execute(
-                f"SELECT AVG({col}) FROM dsec_monthly_stats WHERE month=? AND year>=2023",
-                (month,)
+                f"SELECT AVG({col}) FROM dsec_monthly_stats WHERE month=? AND year BETWEEN ? AND ?",
+                (month, hist_start, hist_end)
             ).fetchone()
             return round(float(row[0]), 1) if row and row[0] else None
     finally:
@@ -299,24 +333,22 @@ def get_latest_market_occupancy(star: int, conn: Optional[sqlite3.Connection] = 
 def get_market_group_floor_ceiling(
     star: int,
     conn: Optional[sqlite3.Connection] = None,
-    years_back: int = 2,
 ) -> tuple[float, float]:
     """
-    用过去 N 年历史数据给市场组生成 floor / ceiling。
+    用统一历史窗口内的月度 ADR 分布给市场组生成 floor / ceiling。
     规则：
       - 3★+4★ 共用一个 mass 区间
       - 5★ 单独一个 luxury 区间
-      - floor  = 每年最低月均 ADR 的平均
-      - ceiling = 每年最高月均 ADR 的平均
+      - floor   = 历史月度 ADR 分布的 P20
+      - ceiling = 历史月度 ADR 分布的 P80
+    说明：
+      不再使用年度极值平均法，避免被个别极端月份拉偏。
     """
     _owns = conn is None
     if _owns:
         conn = sqlite3.connect(str(DB_PATH), timeout=5)
     try:
-        latest_year_row = conn.execute("SELECT MAX(year) FROM dsec_monthly_stats").fetchone()
-        latest_year = int(latest_year_row[0] or 2025)
-        hist_end = latest_year - 1 if latest_year >= 2026 else latest_year
-        hist_start = max(2020, hist_end - years_back + 1)
+        hist_start, hist_end = _historical_window(conn)
         rows = conn.execute(
             """
             SELECT year,
@@ -329,29 +361,20 @@ def get_market_group_floor_ceiling(
             (hist_start, hist_end),
         ).fetchall()
         market_group = _market_group(star)
-        by_year: dict[int, list[float]] = {}
+        monthly_values: list[float] = []
         for row in rows:
-            yr = int(row[0])
             adr = _group_monthly_metric(row[1:], "adr", market_group)
             if adr is None:
                 continue
-            by_year.setdefault(yr, []).append(float(adr))
+            monthly_values.append(float(adr))
 
-        yearly_lows: list[float] = []
-        yearly_highs: list[float] = []
-        for values in by_year.values():
-            if not values:
-                continue
-            yearly_lows.append(min(values))
-            yearly_highs.append(max(values))
-
-        if not yearly_lows or not yearly_highs:
+        if not monthly_values:
             if market_group == "luxury":
                 return 1200.0, 2200.0
             return 700.0, 1200.0
 
-        floor_price = round(sum(yearly_lows) / len(yearly_lows), 1)
-        ceiling_price = round(sum(yearly_highs) / len(yearly_highs), 1)
+        floor_price = round(_percentile(monthly_values, 0.20), 1)
+        ceiling_price = round(_percentile(monthly_values, 0.80), 1)
         if ceiling_price <= floor_price:
             ceiling_price = floor_price * 1.15
         return floor_price, ceiling_price
@@ -373,9 +396,7 @@ def get_latest_market_demand_signal(star: int, conn: Optional[sqlite3.Connection
             return 0.0
         market_group = _market_group(star)
         latest_occ_pct = float(snap["occupancy"]) * 100.0
-        latest_year = int(snap["year"])
-        hist_end = latest_year - 1 if latest_year >= 2026 else latest_year
-        hist_start = max(2020, hist_end - 1)
+        hist_start, hist_end = _historical_window(conn)
         rows = conn.execute(
             """
             SELECT all_occ_pct, star5_occ_pct, star4_occ_pct, star3_occ_pct,
@@ -403,7 +424,7 @@ def get_latest_market_demand_signal(star: int, conn: Optional[sqlite3.Connection
 def get_seasonal_profile(star: int,
                          conn: Optional[sqlite3.Connection] = None) -> dict[int, dict]:
     """
-    返回12个月的历史均值画像（取2023-2025，代表恢复后的正常水平）。
+    返回12个月的历史均值画像（使用统一历史窗口，代表恢复后的正常水平）。
     {1: {"occ": 0.926, "adr": 1373, "revpar": 1271, "season_mult": 0.94}, ...}
     season_mult = adr / annual_avg_adr（相对年均值的季节乘数）
     """
@@ -411,14 +432,15 @@ def get_seasonal_profile(star: int,
     if _owns:
         conn = sqlite3.connect(str(DB_PATH), timeout=5)
     try:
+        hist_start, hist_end = _historical_window(conn)
         occ_col = _occ_col(star)
         adr_col = _adr_col(star)
         rows = conn.execute(f"""
             SELECT month, AVG({occ_col}), AVG({adr_col})
             FROM dsec_monthly_stats
-            WHERE year >= 2023
+            WHERE year BETWEEN ? AND ?
             GROUP BY month ORDER BY month
-        """).fetchall()
+        """, (hist_start, hist_end)).fetchall()
 
         if not rows:
             return {}
@@ -463,12 +485,9 @@ def get_dsec_demand_signal(month: int, star: int,
         conn = sqlite3.connect(str(DB_PATH), timeout=5)
     try:
         col = _occ_col(star)
-        latest_year_row = conn.execute("SELECT MAX(year) FROM dsec_monthly_stats").fetchone()
-        latest_year = int(latest_year_row[0] or 2025)
-        hist_end = latest_year - 1 if latest_year >= 2026 else latest_year
-        hist_start = max(2020, hist_end - 4)
+        hist_start, hist_end = _historical_window(conn)
 
-        # 计算该月的历史均值和标准差（最近最多5个历史年份，同月口径）
+        # 计算该月的历史均值和标准差（统一窗口，同月口径）
         rows = conn.execute(
             f"SELECT {col} FROM dsec_monthly_stats WHERE month=? AND year BETWEEN ? AND ?",
             (month, hist_start, hist_end)

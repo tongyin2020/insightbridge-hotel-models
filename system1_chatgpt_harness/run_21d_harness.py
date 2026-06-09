@@ -200,6 +200,8 @@ def build_external_snapshot(ts_utc: str, signal: dict[str, Any], real_data: dict
         "raw_market_source_ok": bool(real_data.get("booking_prices_3") or real_data.get("booking_prices_45")),
         "dsec_market_occ": signal.get("dsec_market_occ", 0.0),
         "dsec_demand_signal": signal.get("dsec_market_occ", 0.0),
+        "mha_market_occ": signal.get("mha_market_occ", 0.0),
+        "blended_market_demand_signal": signal.get("blended_market_demand_signal", 0.0),
         "dsec_cold_adr": {"3": 922.0, "4": 957.0, "5": 1501.0},
     }
 

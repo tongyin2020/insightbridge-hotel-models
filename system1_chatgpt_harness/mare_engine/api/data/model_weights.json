@@ -15,7 +15,7 @@
     "zhuhai_saturation": 0.12,
     "ota_booking_pace": 0.05,
     "weather": 0.03,
-    "dsec_market_occ": 0.03,
-    "mha_market_occ": 0.1
+    "dsec_market_occ": 0.04,
+    "mha_market_occ": 0.09
   }
 }
