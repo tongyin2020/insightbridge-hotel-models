@@ -128,7 +128,12 @@ except ImportError:
         return SimpleNamespace(
             optimal_price=candidate_price, predicted_occupancy=0.72,
             predicted_revpar=candidate_price*0.72, baseline_revpar=market_price*0.72,
-            true_lift_pct=0.0, elasticity_used=0.0, data_source="unavailable", search_steps=0
+            predicted_trevpar=candidate_price*0.72, baseline_trevpar=market_price*0.72,
+            true_lift_pct=0.0, revpar_lift_pct=0.0, elasticity_used=0.0,
+            elasticity_profile="unavailable", max_price_premium=0.0, optimal_occupancy=0.72,
+            ancillary_profile="unavailable", ancillary_ratio_used=0.0,
+            ancillary_margin_used=0.0, ancillary_per_occ=0.0,
+            data_source="unavailable", search_steps=0
         )
 
 # ── 切换为澳门旅游局官方76家真实酒店 ─────────────────────────────────────────
@@ -484,8 +489,19 @@ def main():
                     r["recommended_price"]   = er.optimal_price
                     r["predicted_occupancy"] = er.predicted_occupancy
                     r["predicted_revpar"]    = er.predicted_revpar
-                    r["expected_revenue_lift"] = f"+{er.true_lift_pct:.1f}%"
+                    r["predicted_trevpar"]   = er.predicted_trevpar
+                    r["baseline_trevpar"]    = er.baseline_trevpar
+                    r["expected_revenue_lift"] = f"{er.true_lift_pct:+.1f}%"
+                    r["expected_room_revenue_lift"] = f"{er.revpar_lift_pct:+.1f}%"
                     r["elasticity_used"]     = er.elasticity_used
+                    r["elasticity_profile"]  = er.elasticity_profile
+                    r["max_price_premium"]   = er.max_price_premium
+                    r["optimal_occupancy_target"] = er.optimal_occupancy
+                    r["ancillary_profile"]   = er.ancillary_profile
+                    r["ancillary_ratio_used"] = er.ancillary_ratio_used
+                    r["ancillary_margin_used"] = er.ancillary_margin_used
+                    r["ancillary_per_occ"]   = er.ancillary_per_occ
+                    r["optimization_objective"] = "light_trevpar"
                     # ── V6 RevPAR 真实弹性优化 ──────────────────────────────
                     if _V6_OK and r.get("recommended_price", 0) > 0:
                         try:
@@ -522,7 +538,17 @@ def main():
                                  "confidence": r.get("confidence"),
                                  "predicted_occupancy": r.get("predicted_occupancy"),
                                  "predicted_revpar": r.get("predicted_revpar"),
-                                 "elasticity_used": r.get("elasticity_used")}),
+                                 "predicted_trevpar": r.get("predicted_trevpar"),
+                                 "elasticity_used": r.get("elasticity_used"),
+                                 "elasticity_profile": r.get("elasticity_profile"),
+                                 "max_price_premium": r.get("max_price_premium"),
+                                 "optimal_occupancy_target": r.get("optimal_occupancy_target"),
+                                 "ancillary_profile": r.get("ancillary_profile"),
+                                 "ancillary_ratio_used": r.get("ancillary_ratio_used"),
+                                 "ancillary_margin_used": r.get("ancillary_margin_used"),
+                                 "ancillary_per_occ": r.get("ancillary_per_occ"),
+                                 "expected_revenue_lift": r.get("expected_revenue_lift"),
+                                 "expected_room_revenue_lift": r.get("expected_room_revenue_lift")}),
                      rp, r.get("demand_state"), r.get("confidence"),
                      r.get("expected_revenue_lift"), "; ".join(anom),
                      weather_c, int(signal["is_holiday"]), int(signal["is_weekend"]))
@@ -619,7 +645,7 @@ def main():
                                   r.get("direct_net_revenue", 0) > r.get("ota_net_revenue", 0) * 1.05
                       else "Medium" if r.get("direct_wins_vs_ota")
                       else "Low"),
-                     f"+{r.get('revpar_lift_vs_market', '0%')}", "; ".join(anom),
+                     r.get("revpar_lift_vs_market", "0%"), "; ".join(anom),
                      weather_c, int(signal["is_holiday"]), int(signal["is_weekend"]))
                 )
                 hour_results.append(("ACQ", dp, anom))

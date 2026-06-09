@@ -240,7 +240,7 @@ def run_cycle(cycle_no: int, jsonl_path: Path, summary_path: Path, counters: dic
                             result["recommended_price"] = float(result.get("crm_adjusted_price") or result.get("recommended_price") or 0.0)
                             result.setdefault("predicted_occupancy", scenario.current_occupancy)
                             result.setdefault("predicted_revpar", round(result["recommended_price"] * scenario.current_occupancy, 2))
-                            result.setdefault("expected_revenue_lift", f"+{float(result.get('elasticity_lift_pct') or 0.0):.2f}%")
+                            result.setdefault("expected_revenue_lift", f"{float(result.get('elasticity_lift_pct') or 0.0):+.2f}%")
                         issues = detect_anomalies(hotel_base, result, signal, "MARE_ALL" if model_name == "mare" else "DIRECTOR_CRM_ALL")
                         payload = {
                             "timestamp_utc": run_ts,

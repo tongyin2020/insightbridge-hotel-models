@@ -1,7 +1,7 @@
 {
   "metadata": {
-    "scope_note": "This file drives batch hotel coverage. Expand and reconcile it against the latest official MGTO accommodation classification before production-style staging.",
-    "mare_scope": "Macau 2-star and 3-star hotels for pricing/RMS staging",
+    "scope_note": "Legacy coverage file retained for reference. Active validation now follows the official 76-hotel roster and focuses on Macau 3-star, 4-star and 5-star hotels.",
+    "mare_scope": "Macau 3-star and 4-star mass-market hotels for pricing/RMS staging",
     "director_scope": "Macau 4-star and 5-star hotels for direct-booking/OTA-reduction staging"
   },
   "mare_hotels": [
@@ -39,24 +39,6 @@
       "star_band": "3-star",
       "base_price": 700.0,
       "total_rooms": 112,
-      "hotel_city": "Macau"
-    },
-    {
-      "hotel_id": "caravel_hotel_macau",
-      "hotel_name": "Caravel Hotel",
-      "market_segment": "macau_midscale",
-      "star_band": "2-star",
-      "base_price": 610.0,
-      "total_rooms": 46,
-      "hotel_city": "Macau"
-    },
-    {
-      "hotel_id": "ole_london_hotel_macau",
-      "hotel_name": "Ole London Hotel",
-      "market_segment": "macau_midscale",
-      "star_band": "2-star",
-      "base_price": 580.0,
-      "total_rooms": 60,
       "hotel_city": "Macau"
     }
   ],

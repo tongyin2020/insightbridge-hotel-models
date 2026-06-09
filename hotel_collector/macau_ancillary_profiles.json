@@ -1,0 +1,29 @@
+{
+  "meta": {
+    "data_source": "DSEC 2024年酒店业调查 + 2025旅客消费调查",
+    "last_update": "2026-02",
+    "notes": [
+      "ratio 表示非房收入 / 房费收入",
+      "gross_margin 表示非房收入转化为贡献的毛利率",
+      "模型实际使用的是 ratio × gross_margin 对应的非房贡献"
+    ]
+  },
+  "profiles": {
+    "5star_integrated_resort": {
+      "non_room_to_room_ratio": 1.5,
+      "ancillary_gross_margin": 0.4
+    },
+    "5star_non_casino": {
+      "non_room_to_room_ratio": 0.8,
+      "ancillary_gross_margin": 0.35
+    },
+    "4star": {
+      "non_room_to_room_ratio": 0.5,
+      "ancillary_gross_margin": 0.3
+    },
+    "3star": {
+      "non_room_to_room_ratio": 0.3,
+      "ancillary_gross_margin": 0.28
+    }
+  }
+}

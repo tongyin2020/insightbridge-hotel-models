@@ -1,7 +1,7 @@
 """
 InsightBridge Price Elasticity Engine  v1.0
 ============================================
-第二阶段：模拟弹性系数驱动的 RevPAR 最优化
+第二阶段：模拟弹性系数驱动的 RevPAR / 轻量 TRevPAR 最优化
 第三阶段接口：从 pms_feedback 表拟合真实弹性曲线（预留）
 
 核心逻辑
@@ -9,8 +9,10 @@ InsightBridge Price Elasticity Engine  v1.0
   price_premium       = (candidate_price - market_price) / market_price
   predicted_occupancy = base_occ × (1 - elasticity × price_premium)
   RevPAR              = candidate_price × predicted_occupancy
+  TRevPAR(light)      = (candidate_price + ancillary_per_occ) × predicted_occupancy
 
-枚举 [floor, ceiling] 内所有价格点（步长 10 MOP），选 RevPAR 最大的价格。
+枚举 [floor, ceiling] 内所有价格点（步长 10 MOP），
+默认选轻量 TRevPAR（房费 + 非房贡献）最大的价格。
 
 弹性系数分层（模拟阶段，基于澳门市场同类研究）
 ------------------------------------------------
@@ -46,6 +48,8 @@ from functools import lru_cache
 
 log = logging.getLogger("elasticity")
 _V6_PROFILE_PATH = Path(__file__).resolve().parent.parent / "共用_HROS_V6引擎" / "hotel_profiles_v6.json"
+_MACAU_ANCILLARY_PATH = Path(__file__).resolve().parent / "macau_ancillary_profiles.json"
+_MACAU_REVENUE_PROFILE_PATH = Path(__file__).resolve().parent / "macau_static_revenue_profiles.json"
 
 # ── 星级价格护栏（MOP）────────────────────────────────────────────────────────
 _PRICE_FLOOR   = {3: 680,  4: 750,  5: 1200}
@@ -55,50 +59,31 @@ _PRICE_FLOOR   = {3: 680,  4: 750,  5: 1200}
 # 修复(2026-06-02): 3★ 420→680 (防止OTA低价拉低搜索起点; DSEC 3★ ADR ~950×0.70=665→取整680)
 _PRICE_CEILING = {3: 1250, 4: 2000, 5: 8000}
 
-# ── 基础入住率（按需求档位，模拟阶段经验值）────────────────────────────────────
-_BASE_OCCUPANCY = {
-    "HIGH":   0.88,
-    "NORMAL": 0.72,
-    "LOW":    0.52,
-}
+_DEFAULT_ANCILLARY_RATIO = 0.45
+_DEFAULT_ANCILLARY_MARGIN = 0.30
+_DEFAULT_ELASTICITY = 1.0
+_DEFAULT_MAX_PRICE_PREMIUM = 0.0
+_DEFAULT_OPTIMAL_OCCUPANCY = 0.80
 
-# ── 模拟弹性系数（按星级+区域）──────────────────────────────────────────────────
-# district 区域代码: COTAI/TAIPA=路氹/氹仔, PENINSULA/NAPE/INNER=半岛区
-#
-# 调优(2026-06-01): 3★/4★弹性系数上调，原因：
-#   - 原值基于澳门学术估值(3★=0.82, 4★=0.63)，偏低估计价格敏感度
-#   - DSEC历史ADR=922(3★)作为market_price时，低弹性导致最优价超DSEC历史最高价
-#   - 澳门大众市场(散客/OTA为主)实际表现出更高价格敏感：
-#     涨价30%→客流量下降25-35%（不是模型估算的17-22%）
-#   - 新值来源：DSEC入住率-价格相关性分析 + 同期澳门市场调研校准
-#   - 3★: 0.82→0.95 (+16%)  |  4★: 0.63→0.72 (+14%)
-#   - 5★: 保持原值（豪华市场弹性估值相对准确，输出已合理）
-#
-_SIMULATED_ELASTICITY: dict[tuple[int, str], float] = {
-    (3, "TAIPA"):      0.93,   # 调优: 0.80→0.93
-    (3, "NAPE"):       0.95,   # 调优: 0.82→0.95
-    (3, "INNER"):      0.98,   # 调优: 0.85→0.98
-    (3, "COT"):        0.91,   # 调优: 0.78→0.91
-    (3, "PENINSULA"):  0.96,   # 调优: 0.83→0.96
-    (4, "TAIPA"):      0.63,   # 调优: 0.55→0.63
-    (4, "NAPE"):       0.72,   # 调优: 0.63→0.72
-    (4, "INNER"):      0.74,   # 调优: 0.65→0.74
-    (4, "COT"):        0.60,   # 调优: 0.52→0.60（路氹商旅目的地，稍低）
-    (4, "PENINSULA"):  0.68,   # 调优: 0.60→0.68
-    (5, "TAIPA"):      0.38,   # 不变
-    (5, "NAPE"):       0.42,   # 不变
-    (5, "INNER"):      0.45,   # 不变
-    (5, "COT"):        0.28,   # 不变：路氹赌场度假村，目的地效应强，弹性最低
-    (5, "PENINSULA"):  0.40,   # 不变
-}
-_DEFAULT_ELASTICITY = {3: 0.95, 4: 0.68, 5: 0.38}   # 调优: 3★ 0.82→0.95, 4★ 0.60→0.68
-
-# ── 季节弹性乘数──────────────────────────────────────────────────────────────
-_SEASON_MULTIPLIER = {
-    "super_peak": 0.45,   # 春节/黄金周/大赛车：需求旺，弹性低
-    "peak":       0.65,
-    "normal":     1.00,
-    "low":        1.30,   # 淡季：客户选择多，弹性高
+# 按现有76酒店名单，对澳门5★综合度假村做显式识别。
+_INTEGRATED_RESORT_IDS = {
+    "MAC_5DX_WYNN_002",  # 永利皇宫
+    "MAC_5DX_GLPA_009",  # 上葡京综合度假村
+    "MAC_5DX_MGMC_010",  # 美狮美高梅
+    "MAC_5ST_VENE_013",  # 威尼斯人
+    "MAC_5ST_GALX_014",  # 银河
+    "MAC_5ST_CONA_015",  # 康莱德
+    "MAC_5ST_MORP_016",  # 摩珀斯
+    "MAC_5ST_STMR_017",  # 瑞吉
+    "MAC_5ST_RITZ_018",  # 丽思卡尔顿
+    "MAC_5ST_JWMR_019",  # JW万豪
+    "MAC_5ST_OKUR_020",  # 大仓
+    "MAC_5ST_BANY_021",  # 悦榕庄
+    "MAC_5ST_HYAT_022",  # 君悦
+    "MAC_5ST_ANDA_023",  # 安达仕
+    "MAC_5ST_LGRD_024",  # 伦敦人名汇
+    "MAC_5ST_BROD_032",  # 百老汇酒店
+    "MAC_5ST_TRSN_040",  # 新濠天地翠湖
 }
 
 
@@ -110,13 +95,41 @@ def _load_v6_profiles() -> dict[str, dict]:
         return {}
 
 
+@lru_cache(maxsize=1)
+def _load_macau_ancillary_profiles() -> dict[str, dict]:
+    try:
+        raw = json.loads(_MACAU_ANCILLARY_PATH.read_text(encoding="utf-8"))
+        return raw.get("profiles") or {}
+    except Exception:
+        return {}
+
+
+@lru_cache(maxsize=1)
+def _load_macau_revenue_profiles() -> dict[str, dict]:
+    try:
+        raw = json.loads(_MACAU_REVENUE_PROFILE_PATH.read_text(encoding="utf-8"))
+        return raw.get("profiles") or {}
+    except Exception:
+        return {}
+
+
 class ElasticityResult(NamedTuple):
     optimal_price:        float   # RevPAR 最优推荐价 (MOP)
     predicted_occupancy:  float   # 该价格下预测入住率 [0,1]
     predicted_revpar:     float   # 预测 RevPAR (MOP)
     baseline_revpar:      float   # 以市场价出售时的 RevPAR 基准
-    true_lift_pct:        float   # (optimal_revpar - baseline_revpar) / baseline_revpar
+    predicted_trevpar:    float   # 预测 TRevPAR (房费+非房)
+    baseline_trevpar:     float   # 基准 TRevPAR
+    true_lift_pct:        float   # (optimal_trevpar - baseline_trevpar) / baseline_trevpar
+    revpar_lift_pct:      float   # (optimal_revpar - baseline_revpar) / baseline_revpar
     elasticity_used:      float   # 本次使用的弹性系数
+    elasticity_profile:   str     # 采用的澳门静态弹性档位
+    max_price_premium:    float   # 相对市场价的最高溢价上限
+    optimal_occupancy:    float   # 收益最大化目标入住率
+    ancillary_profile:    str     # 采用的澳门总贡献参数档位
+    ancillary_ratio_used: float   # 当前使用的非房/房费比
+    ancillary_margin_used: float  # 当前使用的非房毛利率
+    ancillary_per_occ:    float   # 每卖出1间夜对应的非房贡献(MOP)
     data_source:          str     # "simulated" | "fitted_pms"
     search_steps:         int     # 枚举了多少个价格点
 
@@ -132,7 +145,7 @@ class ElasticityEngine:
     def __init__(self):
         # 弹性系数存储：key=(hotel_id or (star,district)), value={"e": float, "source": str}
         self._coefficients: dict = {}
-        self._data_source = "simulated"
+        self._data_source = "macau_static"
 
     # ──────────────────────────────────────────────────────────────────────────
     # 公共 API
@@ -149,7 +162,7 @@ class ElasticityEngine:
         hotel_id:         str   = None,
     ) -> ElasticityResult:
         """
-        在价格护栏范围内枚举，返回 RevPAR 最优价格及预测入住率。
+        在价格护栏范围内枚举，返回轻量 TRevPAR 最优价格及预测入住率。
 
         参数
         ----
@@ -169,28 +182,30 @@ class ElasticityEngine:
         if market_price <= 0:
             market_price = float(_PRICE_FLOOR.get(star, 420))
 
-        elasticity = self._get_elasticity(star, district, hotel_id, season)
-        base_occ   = _BASE_OCCUPANCY.get(demand_level, 0.72)
+        elasticity_profile, elasticity, max_price_premium, optimal_occupancy = self._get_revenue_profile(
+            star=star,
+            hotel_id=hotel_id,
+            season=season,
+            demand_level=demand_level,
+        )
+        base_occ   = optimal_occupancy
         hotel_anchor = self._get_hotel_anchor(hotel_id)
 
         floor_p = _PRICE_FLOOR.get(star, 420)
         ceil_p  = _PRICE_CEILING.get(star, 8000)
 
-        # 搜索范围：市场价 ±40%，再与绝对护栏取交集
+        # 搜索范围：价格下限允许适度折价；价格上限严格遵守静态溢价表
         search_lo = max(floor_p, market_price * 0.70)
-        search_hi = min(ceil_p,  market_price * 1.45)
-        if star >= 5:
-            luxury_anchor = max(market_price, hotel_anchor or 0.0, candidate_price or 0.0)
-            if luxury_anchor >= 1800:
-                elasticity *= 0.82
-                if (district or "").upper() in ("COT", "TAIPA"):
-                    elasticity *= 0.92
-                if (season or "normal").lower() in ("peak", "super_peak"):
-                    elasticity *= 0.92
-                search_lo = max(search_lo, luxury_anchor * 0.82)
-                search_hi = min(ceil_p, max(search_hi, luxury_anchor * 1.20))
+        search_hi = min(ceil_p, market_price * (1.0 + max_price_premium))
+        if search_hi < search_lo:
+            search_lo = max(floor_p, search_hi * 0.85)
 
+        ancillary_profile, ancillary_ratio, ancillary_margin = self._get_ancillary_profile(star, hotel_id)
+        ancillary_per_occ = market_price * ancillary_ratio * ancillary_margin
+
+        best_objective = -1.0
         best_revpar = -1.0
+        best_trevpar = -1.0
         best_price  = market_price
         best_occ    = base_occ
         steps       = 0
@@ -198,12 +213,17 @@ class ElasticityEngine:
         price = search_lo
         while price <= search_hi + 1:
             premium = (price - market_price) / market_price
-            occ     = max(0.10, base_occ * (1.0 - elasticity * premium))
-            revpar  = price * occ
-            if revpar > best_revpar:
+            occ_raw  = max(0.10, base_occ * (1.0 - elasticity * premium))
+            # 超过最优入住率后，边际收益递减，因此目标函数只计算到最优点为止。
+            occ_effective = min(occ_raw, optimal_occupancy)
+            revpar  = price * occ_raw
+            trevpar = price * occ_effective + ancillary_per_occ * occ_effective
+            if trevpar > best_objective:
+                best_objective = trevpar
                 best_revpar = revpar
+                best_trevpar = trevpar
                 best_price  = price
-                best_occ    = occ
+                best_occ    = occ_raw
             price += 10
             steps += 1
 
@@ -211,16 +231,29 @@ class ElasticityEngine:
 
         # 基准：以市场价出售的 RevPAR
         baseline_revpar = market_price * base_occ
-        true_lift = ((best_revpar - baseline_revpar) / baseline_revpar
-                     if baseline_revpar > 0 else 0.0)
+        baseline_trevpar = baseline_revpar + ancillary_per_occ * base_occ
+        total_lift = ((best_trevpar - baseline_trevpar) / baseline_trevpar
+                      if baseline_trevpar > 0 else 0.0)
+        revpar_lift = ((best_revpar - baseline_revpar) / baseline_revpar
+                       if baseline_revpar > 0 else 0.0)
 
         return ElasticityResult(
             optimal_price       = best_price,
             predicted_occupancy = round(best_occ, 4),
             predicted_revpar    = round(best_revpar, 1),
             baseline_revpar     = round(baseline_revpar, 1),
-            true_lift_pct       = round(true_lift * 100, 2),
+            predicted_trevpar   = round(best_trevpar, 1),
+            baseline_trevpar    = round(baseline_trevpar, 1),
+            true_lift_pct       = round(total_lift * 100, 2),
+            revpar_lift_pct     = round(revpar_lift * 100, 2),
             elasticity_used     = round(elasticity, 4),
+            elasticity_profile  = elasticity_profile,
+            max_price_premium   = round(max_price_premium, 4),
+            optimal_occupancy   = round(optimal_occupancy, 4),
+            ancillary_profile   = ancillary_profile,
+            ancillary_ratio_used= round(ancillary_ratio, 4),
+            ancillary_margin_used=round(ancillary_margin, 4),
+            ancillary_per_occ   = round(ancillary_per_occ, 1),
             data_source         = self._data_source,
             search_steps        = steps,
         )
@@ -310,21 +343,20 @@ class ElasticityEngine:
     # 内部辅助
     # ──────────────────────────────────────────────────────────────────────────
 
-    def _get_elasticity(self, star: int, district: str, hotel_id: str | None,
-                        season: str) -> float:
-        # 优先：已拟合的真实酒店系数
-        if hotel_id and hotel_id in self._coefficients:
-            base_e = self._coefficients[hotel_id]["e"]
-        else:
-            district_upper = (district or "NAPE").upper()
-            base_e = _SIMULATED_ELASTICITY.get(
-                (star, district_upper),
-                _DEFAULT_ELASTICITY.get(star, 0.70),
-            )
-
-        season_lower = (season or "normal").lower()
-        multiplier   = _SEASON_MULTIPLIER.get(season_lower, 1.0)
-        return round(base_e * multiplier, 4)
+    def _get_revenue_profile(
+        self,
+        *,
+        star: int,
+        hotel_id: str | None,
+        season: str,
+        demand_level: str,
+    ) -> tuple[str, float, float, float]:
+        profile_name = self._resolve_revenue_profile(star, hotel_id, season, demand_level)
+        profile = _load_macau_revenue_profiles().get(profile_name, {})
+        elasticity = float(profile.get("elasticity") or _DEFAULT_ELASTICITY)
+        max_premium = float(profile.get("max_price_premium") or _DEFAULT_MAX_PRICE_PREMIUM)
+        optimal_occ = float(profile.get("optimal_occupancy") or _DEFAULT_OPTIMAL_OCCUPANCY)
+        return profile_name, elasticity, max_premium, optimal_occ
 
     def _get_hotel_anchor(self, hotel_id: str | None) -> float | None:
         if not hotel_id:
@@ -337,6 +369,54 @@ class ElasticityEngine:
             return anchor or None
         except Exception:
             return None
+
+    def _get_ancillary_profile(self, star: int, hotel_id: str | None) -> tuple[str, float, float]:
+        profile_name = self._resolve_macau_profile(star, hotel_id)
+        profile = _load_macau_ancillary_profiles().get(profile_name, {})
+        ratio = float(profile.get("non_room_to_room_ratio") or _DEFAULT_ANCILLARY_RATIO)
+        margin = float(profile.get("ancillary_gross_margin") or _DEFAULT_ANCILLARY_MARGIN)
+        return profile_name, ratio, margin
+
+    def _resolve_macau_profile(self, star: int, hotel_id: str | None) -> str:
+        if int(star or 0) <= 3:
+            return "3star"
+        if int(star or 0) == 4:
+            return "4star"
+        if hotel_id and hotel_id in _INTEGRATED_RESORT_IDS:
+            return "5star_integrated_resort"
+        return "5star_non_casino"
+
+    def _resolve_revenue_profile(
+        self,
+        star: int,
+        hotel_id: str | None,
+        season: str,
+        demand_level: str,
+    ) -> str:
+        season_key = (season or "normal").lower()
+        demand_key = (demand_level or "NORMAL").upper()
+
+        if int(star or 0) >= 5:
+            if hotel_id and hotel_id in _INTEGRATED_RESORT_IDS:
+                if season_key in ("super_peak", "peak"):
+                    return "5star_resort_leisure_peak"
+                if season_key in ("low",) or demand_key == "LOW":
+                    return "5star_resort_leisure_low"
+                return "5star_resort_leisure_shoulder"
+            return "5star_business_mice"
+
+        if int(star or 0) == 4:
+            if season_key in ("super_peak", "peak"):
+                return "4star_leisure_peak"
+            if season_key in ("low",) or demand_key == "LOW":
+                return "4star_leisure_low"
+            return "4star_leisure_shoulder"
+
+        if season_key in ("super_peak", "peak"):
+            return "3star_ota_peak"
+        if season_key in ("low",) or demand_key == "LOW":
+            return "3star_ota_low"
+        return "3star_ota_shoulder"
 
 
 # ── PMS 数据库建表脚本（Phase 3 接口）────────────────────────────────────────

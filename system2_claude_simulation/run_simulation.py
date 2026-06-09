@@ -112,7 +112,12 @@ except ImportError:
         return SimpleNamespace(
             optimal_price=candidate_price, predicted_occupancy=0.72,
             predicted_revpar=candidate_price*0.72, baseline_revpar=market_price*0.72,
-            true_lift_pct=0.0, elasticity_used=0.0, data_source="unavailable", search_steps=0
+            predicted_trevpar=candidate_price*0.72, baseline_trevpar=market_price*0.72,
+            true_lift_pct=0.0, revpar_lift_pct=0.0, elasticity_used=0.0,
+            elasticity_profile="unavailable", max_price_premium=0.0, optimal_occupancy=0.72,
+            ancillary_profile="unavailable", ancillary_ratio_used=0.0,
+            ancillary_margin_used=0.0, ancillary_per_occ=0.0,
+            data_source="unavailable", search_steps=0
         )
 
 
@@ -981,8 +986,19 @@ def run_3star_test(hotel: dict, signal: dict, real_data: dict,
         result["predicted_occupancy"] = er.predicted_occupancy
         result["predicted_revpar"]    = er.predicted_revpar
         result["baseline_revpar"]     = er.baseline_revpar
-        result["expected_revenue_lift"] = f"+{er.true_lift_pct:.1f}%"
+        result["predicted_trevpar"]   = er.predicted_trevpar
+        result["baseline_trevpar"]    = er.baseline_trevpar
+        result["expected_revenue_lift"] = f"{er.true_lift_pct:+.1f}%"
+        result["expected_room_revenue_lift"] = f"{er.revpar_lift_pct:+.1f}%"
         result["elasticity_used"]     = er.elasticity_used
+        result["elasticity_profile"]  = er.elasticity_profile
+        result["max_price_premium"]   = er.max_price_premium
+        result["optimal_occupancy_target"] = er.optimal_occupancy
+        result["ancillary_profile"]   = er.ancillary_profile
+        result["ancillary_ratio_used"] = er.ancillary_ratio_used
+        result["ancillary_margin_used"] = er.ancillary_margin_used
+        result["ancillary_per_occ"]   = er.ancillary_per_occ
+        result["optimization_objective"] = "light_trevpar"
         result["elasticity_source"]   = er.data_source
 
     # ── Phase 3：HROS V6 RevPAR 真实弹性优化 ────────────────────────────────
@@ -1137,7 +1153,7 @@ def run_45star_test(hotel: dict, signal: dict, real_data: dict,
         )
         result["elasticity_validated_price"] = er.optimal_price
         result["predicted_occupancy"]        = er.predicted_occupancy
-        result["revpar_lift_vs_market"]      = f"+{er.true_lift_pct:.1f}%"
+        result["revpar_lift_vs_market"]      = f"{er.revpar_lift_pct:+.1f}%"
         result["elasticity_used"]            = er.elasticity_used
 
     # ── Phase 3：V6 SelfACQ LTV 评估 ─────────────────────────────────────────
