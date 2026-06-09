@@ -171,16 +171,16 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
             pass
 
     if mha_adr_ref > 0:
-        base = mha_adr_ref
+        raw_base = mha_adr_ref
     elif dsec_adr_ref > 0:
-        base = dsec_adr_ref
+        raw_base = dsec_adr_ref
     else:
-        base = ota_estimate * 0.97
+        raw_base = ota_estimate * 0.97
 
     # Step B：使用 DSEC 过去两年历史边界做区间截断
     settings = _hotel_settings({"star": star})
     lo, hi = float(settings.floor_price), float(settings.ceiling_price)
-    base = max(lo, min(hi, base))
+    base = _soft_anchor_to_band(raw_base, lo, hi)
 
     # Step C：声誉情感修正（review_sentiment + google_ratings 双源）
     rep_adj = 0.0
@@ -191,7 +191,7 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
         except Exception:
             pass
 
-    base = base * (1.0 + rep_adj)
+    base, rep_adj_used = _apply_bounded_adjustment(base, rep_adj, lo, hi)
 
     # Step D：OTA库存紧张信号修正（inventory_signals → 需求溢价）
     inv_adj = 0.0
@@ -220,9 +220,50 @@ def compute_dynamic_base_price(hotel_id: str, star: int,
         except Exception:
             pass
 
-    base = base * (1.0 + inv_adj)
+    base, inv_adj_used = _apply_bounded_adjustment(base, inv_adj, lo, hi)
     base = max(lo, min(hi, base))
-    return round(base / 10) * 10
+    rounded = round(base / 10) * 10
+    return max(lo, min(hi, rounded))
+
+
+def _soft_anchor_to_band(value: float, floor_price: float, ceiling_price: float,
+                         overflow_keep: float = 0.35) -> float:
+    """
+    Soft-anchor a raw market center toward the guardrail band instead of
+    immediately hard clipping it. This preserves some signal continuity before
+    later bounded adjustments and the final hard clamp.
+    """
+    if floor_price >= ceiling_price:
+        return value
+    if value < floor_price:
+        return floor_price - (floor_price - value) * overflow_keep
+    if value > ceiling_price:
+        return ceiling_price + (value - ceiling_price) * overflow_keep
+    return value
+
+
+def _apply_bounded_adjustment(base: float, adj_pct: float,
+                              floor_price: float, ceiling_price: float) -> tuple[float, float]:
+    """
+    Apply a multiplicative adjustment only to the extent that there is still
+    room inside the floor/ceiling band. This reduces flat zero-sensitivity
+    zones caused by stacking multipliers and then hard-clamping.
+    """
+    if not adj_pct or base <= 0 or floor_price >= ceiling_price:
+        return base, 0.0
+
+    requested_move = abs(base * adj_pct)
+    if requested_move <= 0:
+        return base, 0.0
+
+    if adj_pct > 0:
+        available_move = max(0.0, ceiling_price - base)
+    else:
+        available_move = max(0.0, base - floor_price)
+
+    scale = min(1.0, available_move / requested_move) if requested_move > 0 else 0.0
+    effective_adj = adj_pct * scale
+    return base * (1.0 + effective_adj), effective_adj
 
 # ── 企业微信推送（非阻塞，不影响模拟运行）────────────────────────────────────
 _last_critical_alert  = 0   # 防刷屏：CRITICAL 最多每2小时一次
