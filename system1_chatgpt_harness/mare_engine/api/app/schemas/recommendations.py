@@ -5,6 +5,7 @@ from pydantic import BaseModel, field_validator
 
 class RecommendationRequest(BaseModel):
     hotel_id: str
+    hotel_star: int = 3
     season: str
     base_price: float
     holiday: float = 0

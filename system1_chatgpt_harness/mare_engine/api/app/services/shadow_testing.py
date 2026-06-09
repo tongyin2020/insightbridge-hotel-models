@@ -142,7 +142,11 @@ def generate_shadow_recommendation(
     state = demand_state(score)
     d_adj = demand_adjustment(score)
     c_adj = competition_adjustment(
-        state, data.competitor_price, seasonal_base, data.competitor_availability
+        state,
+        data.competitor_price,
+        seasonal_base,
+        data.competitor_availability,
+        getattr(data, "hotel_star", 3),
     )
 
     from app.services.pricing_engine import profit_adjustment

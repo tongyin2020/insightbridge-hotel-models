@@ -113,9 +113,9 @@ def demand_adjustment(score):
     return 0.12
 
 
-def competition_adjustment(state, competitor_price, our_base, competitor_availability):
-    # Midscale Macau pricing is competitor-sensitive, but we cap the adjustment
-    # so a bad scrape cannot dominate the entire recommendation.
+def competition_adjustment(state, competitor_price, our_base, competitor_availability, hotel_star: int = 3):
+    # Align with System 2 so 3-4★ and 5★ do not react to competitors with
+    # different hidden weights across systems.
     if competitor_price is None or competitor_price <= 0:
         return 0.0
 
@@ -124,7 +124,12 @@ def competition_adjustment(state, competitor_price, our_base, competitor_availab
     gap_ratio = (safe_comp - safe_base) / safe_base
     availability = _clamp(float(competitor_availability or 0.0), 0.0, 1.0)
     availability_boost = 0.015 if availability > 0.55 else 0.0
-    weight = 0.25 if state == "HIGH" else 0.90 if state == "LOW" else 0.65
+
+    if hotel_star >= 5:
+        weight = 0.20 if state == "HIGH" else 0.30 if state == "LOW" else 0.15
+    else:
+        weight = 0.25 if state == "HIGH" else 0.50 if state == "LOW" else 0.40
+
     return round(_clamp(gap_ratio * weight + availability_boost, -0.15, 0.15), 4)
 
 
@@ -266,6 +271,7 @@ def compute_dynamic_ceiling(
     if events is not None and events > 0.40:
         ceiling *= 1.0 + 0.04 * events
 
+    ceiling = max(ceiling, static_ceiling)
     return round(min(ceiling, static_ceiling * 1.15), 2)
 
 
@@ -336,8 +342,18 @@ def recommend(data, hotel_settings=None):
     current_occupancy = _clamp(getattr(data, "current_occupancy", 0.0), 0.0, 1.0)
     elasticity_signal = _clamp(getattr(data, "elasticity_signal", 0.0), -1.0, 1.0)
 
-    c_adj = competition_adjustment(state, data.competitor_price, seasonal_base, competitor_availability)
-    reasons_list.append({"title": "Market Positioning", "detail": f"Competitor price MOP {data.competitor_price:.0f} influences market alignment."})
+    hotel_star = int(getattr(data, "hotel_star", 3) or 3)
+    c_adj = competition_adjustment(
+        state,
+        data.competitor_price,
+        seasonal_base,
+        competitor_availability,
+        hotel_star,
+    )
+    reasons_list.append({
+        "title": "Market Positioning",
+        "detail": f"Competitor price MOP {data.competitor_price:.0f} influences market alignment (star={hotel_star}).",
+    })
 
     crm_adj, crm_reason = crm_adjustment(
         guest_segment=getattr(data, "guest_segment", "unknown"),
@@ -377,6 +393,7 @@ def recommend(data, hotel_settings=None):
 
     floor_price = hotel_settings.floor_price if hotel_settings else 750
     static_ceiling = hotel_settings.ceiling_price if hotel_settings else 1015
+    static_ceiling = max(static_ceiling, data.base_price)
 
     dyn_ceiling = compute_dynamic_ceiling(
         static_ceiling=static_ceiling,
