@@ -312,6 +312,7 @@ def get_market_signal(sim_hour: int, real_data: dict, fc_data: dict) -> dict:
     mha_mass_sig = float(real_data.get("mha_signal_mass", 0.0) or 0.0)
     mha_lux_sig = float(real_data.get("mha_signal_luxury", 0.0) or 0.0)
     mha_market_occ = round(0.5 * mha_mass_sig + 0.5 * mha_lux_sig, 4)
+    blended_market_demand_signal = round(0.4 * dsec_market_occ + 0.6 * mha_market_occ, 4)
     if mha_market_occ > 0.18:
         mha_demand_state = "HIGH"
     elif mha_market_occ < -0.12:
@@ -348,6 +349,7 @@ def get_market_signal(sim_hour: int, real_data: dict, fc_data: dict) -> dict:
         "mha_occ_mass":       mha_mass_occ,
         "mha_occ_luxury":     mha_lux_occ,
         "mha_market_occ":     mha_market_occ,
+        "blended_market_demand_signal": blended_market_demand_signal,
         "mha_demand_state":   mha_demand_state,
         # DSEC / MHA 需求信号
         "dsec_market_occ":    dsec_market_occ,

@@ -89,7 +89,20 @@ def demand_score(data):
                 "contribution": round(contrib, 4),
             }
         )
-    return round(score, 4), contributions
+    # Let the DSEC/MHA 40/60 blended signal act as a light market anchor
+    # without double-counting it as a full third demand factor.
+    raw_blended = getattr(data, "blended_market_demand_signal", 0.0)
+    blended_val = _clamp(raw_blended, -1.0, 1.0)
+    anchored_score = score * 0.90 + blended_val * 0.10
+    contributions.append(
+        {
+            "name": "blended_market_anchor",
+            "raw_value": raw_blended,
+            "value_used": blended_val,
+            "contribution": round(anchored_score - score, 4),
+        }
+    )
+    return round(anchored_score, 4), contributions
 
 
 def demand_state(score):
