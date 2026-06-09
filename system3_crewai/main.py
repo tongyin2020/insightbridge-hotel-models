@@ -66,8 +66,23 @@ try:
 except Exception as _v6_err:
     pass
 
-# ── CrewAI（可选：无OpenAI则跳过LLM推理）────────────────────────────
-USE_LLM = os.getenv("OPENAI_API_KEY", "") not in ("", "your_openai_key_here")
+# ── CrewAI（可选：任一主力LLM可用即可启用推理）────────────────────────
+def _has_valid_env_key(name: str) -> bool:
+    value = os.getenv(name, "").strip()
+    return bool(value) and not value.startswith("your_")
+
+
+ACTIVE_LLM_LABELS = []
+if _has_valid_env_key("ANTHROPIC_API_KEY"):
+    ACTIVE_LLM_LABELS.append("Claude")
+if _has_valid_env_key("OPENAI_API_KEY"):
+    ACTIVE_LLM_LABELS.append("GPT")
+if _has_valid_env_key("DEEPSEEK_API_KEY"):
+    ACTIVE_LLM_LABELS.append("DeepSeek")
+if _has_valid_env_key("GEMINI_API_KEY"):
+    ACTIVE_LLM_LABELS.append("Gemini")
+
+USE_LLM = bool(ACTIVE_LLM_LABELS)
 USE_CREWAI = True
 try:
     from crewai import Crew, Process
@@ -359,9 +374,10 @@ def main():
     print(f"  澳门酒店AI模型 — CrewAI + Firecrawl + AgentOps 并行模拟")
     print(f"  启动时间: {datetime.now():%Y-%m-%d %H:%M:%S}")
     print(f"  3★（澳门旅游局官方）: {len(HOTELS_23_STAR)}家  |  4-5★（澳门旅游局官方）: {len(HOTELS_45_STAR)}家  |  合计: {len(ALL_HOTELS)}家")
+    llm_status = ", ".join(ACTIVE_LLM_LABELS) if ACTIVE_LLM_LABELS else "关闭（仅运行模型）"
     print(f"  CrewAI: {'启用' if USE_CREWAI else '未安装'}  |  "
           f"AgentOps: {'启用' if USE_AGENTOPS else '未配置'}  |  "
-          f"LLM: {'GPT-4o-mini' if USE_LLM else '关闭（仅运行模型）'}")
+          f"LLM: {llm_status}")
     print(f"  Firecrawl: {'已配置' if os.getenv('FIRECRAWL_API_KEY','')[:3]=='fc-' else '未配置'}")
     print(f"  目标: border_flow / zhuhai_saturation / ota_booking_pace 真实数据")
     print(f"{'='*70}\n")

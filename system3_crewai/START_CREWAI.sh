@@ -22,8 +22,12 @@ if grep -q "your_agentops_key_here" .env; then
     echo "⚠  AgentOps未配置（可选）: 请在.env中填入AGENTOPS_API_KEY"
     echo "   去 https://app.agentops.ai 注册免费账号"
 fi
-if grep -q "your_openai_key_here" .env; then
-    echo "ℹ  OpenAI未配置: CrewAI将仅运行数据采集+模型部分（无LLM分析）"
+ANTHROPIC_KEY=$(grep '^ANTHROPIC_API_KEY=' .env 2>/dev/null | cut -d= -f2-)
+OPENAI_KEY=$(grep '^OPENAI_API_KEY=' .env 2>/dev/null | cut -d= -f2-)
+
+if { [ -z "$ANTHROPIC_KEY" ] || [[ "$ANTHROPIC_KEY" == your_* ]]; } && \
+   { [ -z "$OPENAI_KEY" ] || [[ "$OPENAI_KEY" == your_* ]]; }; then
+    echo "ℹ  未检测到主力LLM Key: CrewAI将仅运行数据采集+模型部分（无LLM分析）"
     echo "   这对数据对比没有影响，LLM分析是可选功能"
 fi
 
