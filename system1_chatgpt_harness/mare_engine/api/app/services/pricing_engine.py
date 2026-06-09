@@ -41,6 +41,8 @@ DEFAULT_WEIGHTS = {
     },
 }
 
+_WEIGHT_NORMALIZATION_FACTOR = sum(DEFAULT_WEIGHTS["demand_weights"].values())
+
 WEIGHTS_PATH = Path(os.getenv(
     "MODEL_WEIGHTS_PATH",
     # 修正(2026-06-01): 本地Mac环境无/app路径; 使用相对于此文件的data目录
@@ -64,12 +66,26 @@ def load_weights():
         try:
             loaded = json.loads(WEIGHTS_PATH.read_text(encoding="utf-8"))
             if "demand_weights" in loaded and "season_multipliers" in loaded:
+                total = sum(float(v) for v in loaded["demand_weights"].values())
+                if abs(total - 1.0) > 1e-9 and total > 0:
+                    loaded["demand_weights"] = {
+                        key: round(float(value) / total, 6)
+                        for key, value in loaded["demand_weights"].items()
+                    }
+                    WEIGHTS_PATH.write_text(json.dumps(loaded, indent=2), encoding="utf-8")
                 return loaded
         except Exception:
             pass
     WEIGHTS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    WEIGHTS_PATH.write_text(json.dumps(DEFAULT_WEIGHTS, indent=2), encoding="utf-8")
-    return DEFAULT_WEIGHTS
+    normalized = {
+        "season_multipliers": DEFAULT_WEIGHTS["season_multipliers"],
+        "demand_weights": {
+            key: round(value / _WEIGHT_NORMALIZATION_FACTOR, 6)
+            for key, value in DEFAULT_WEIGHTS["demand_weights"].items()
+        },
+    }
+    WEIGHTS_PATH.write_text(json.dumps(normalized, indent=2), encoding="utf-8")
+    return normalized
 
 
 def demand_score(data):
@@ -106,23 +122,41 @@ def demand_score(data):
 
 
 def demand_state(score):
-    if score > 0.30:
+    if score > round(0.30 / _WEIGHT_NORMALIZATION_FACTOR, 4):
         return "HIGH"
-    if score < -0.12:
+    if score < round(-0.12 / _WEIGHT_NORMALIZATION_FACTOR, 4):
         return "LOW"
     return "NORMAL"
 
 
 def demand_adjustment(score):
     # Smooth ramps replace the old 0 / +8% / +12% discontinuities.
-    if score <= -0.22:
+    if score <= round(-0.22 / _WEIGHT_NORMALIZATION_FACTOR, 4):
         return -0.06
-    if score < -0.06:
-        return round(_lerp(score, -0.22, -0.06, -0.06, 0.0), 4)
-    if score <= 0.18:
+    if score < round(-0.06 / _WEIGHT_NORMALIZATION_FACTOR, 4):
+        return round(
+            _lerp(
+                score,
+                round(-0.22 / _WEIGHT_NORMALIZATION_FACTOR, 4),
+                round(-0.06 / _WEIGHT_NORMALIZATION_FACTOR, 4),
+                -0.06,
+                0.0,
+            ),
+            4,
+        )
+    if score <= round(0.18 / _WEIGHT_NORMALIZATION_FACTOR, 4):
         return 0.0
-    if score < 0.42:
-        return round(_lerp(score, 0.18, 0.42, 0.0, 0.12), 4)
+    if score < round(0.42 / _WEIGHT_NORMALIZATION_FACTOR, 4):
+        return round(
+            _lerp(
+                score,
+                round(0.18 / _WEIGHT_NORMALIZATION_FACTOR, 4),
+                round(0.42 / _WEIGHT_NORMALIZATION_FACTOR, 4),
+                0.0,
+                0.12,
+            ),
+            4,
+        )
     return 0.12
 
 
