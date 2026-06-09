@@ -9,7 +9,7 @@ from pathlib import Path
 from crewai import Agent, Crew, Process, Task
 from dotenv import load_dotenv
 
-from agents import _make_llm
+from agents import _make_llm, _perplexity_llm
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -66,16 +66,18 @@ def main() -> int:
     crew_paths.db_storage_path = lambda: str(CREW_STORE_DIR)
     kickoff_store.db_storage_path = lambda: str(CREW_STORE_DIR)
 
-    llm_primary = _make_llm("claude-sonnet-4-5", "ANTHROPIC_API_KEY", "deepseek/deepseek-chat", "DEEPSEEK_API_KEY")
+    llm_primary = _perplexity_llm() or _make_llm(
+        "perplexity/sonar-pro", "PERPLEXITY_API_KEY", "deepseek/deepseek-chat", "DEEPSEEK_API_KEY"
+    )
     llm_secondary = _make_llm("deepseek/deepseek-chat", "DEEPSEEK_API_KEY", "gpt-4o-mini", "OPENAI_API_KEY")
-    llm_writer = _make_llm("gpt-4o-mini", "OPENAI_API_KEY", "claude-sonnet-4-5", "ANTHROPIC_API_KEY")
+    llm_writer = _make_llm("gpt-4o-mini", "OPENAI_API_KEY", "perplexity/sonar-pro", "PERPLEXITY_API_KEY")
     llm = llm_primary or llm_secondary or llm_writer
     if llm is None:
         raise RuntimeError("No valid LLM key found for CrewAI code audit.")
 
     runtime_agent = Agent(
         role="Runtime Bug Auditor",
-        goal="Find real runtime bugs, import/path problems, stale code paths, and likely crash points.",
+        goal="Find real runtime bugs, import/path problems, stale code paths, and likely crash points after the June 9 cleanup.",
         backstory="You review Python systems with a production reliability mindset. You do not invent issues.",
         llm=llm_primary or llm,
         verbose=True,
@@ -91,7 +93,7 @@ def main() -> int:
     )
     cleanup_agent = Agent(
         role="Legacy Cleanup Auditor",
-        goal="Identify legacy automation, duplicate folders, stale scripts, and old data paths that can interfere with the new system.",
+        goal="Identify legacy automation, duplicate folders, stale scripts, old learning shells, and old data paths that can interfere with the new system.",
         backstory="You focus on operational cleanliness and removal risk.",
         llm=llm,
         verbose=True,
@@ -132,6 +134,7 @@ def main() -> int:
         description=(
             "Audit the provided codebase context and known legacy artifacts for cleanup risk. "
             "Decide what old folders, launch agents, pid files, logs, push scripts, and duplicate code can be safely deleted. "
+            "Verify whether the old learning shells were actually cleaned out or whether any stale references remain. "
             "Separate safe-to-delete from should-keep.\n\n"
             + context_blob
         ),

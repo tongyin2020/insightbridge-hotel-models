@@ -10,7 +10,7 @@ from pathlib import Path
 from crewai import Agent, Crew, Process, Task
 from dotenv import load_dotenv
 
-from agents import _make_llm
+from agents import _make_llm, _perplexity_llm
 from tools.wolfram_tool import WolframAlphaTool
 
 
@@ -121,8 +121,10 @@ def main() -> int:
 
     llm_wolfram = _make_llm("gpt-4o-mini", "OPENAI_API_KEY", "deepseek/deepseek-chat", "DEEPSEEK_API_KEY")
     llm_deepseek = _make_llm("deepseek/deepseek-chat", "DEEPSEEK_API_KEY", "gpt-4o-mini", "OPENAI_API_KEY")
-    llm_gpt = _make_llm("gpt-4o-mini", "OPENAI_API_KEY", "claude-sonnet-4-5", "ANTHROPIC_API_KEY")
-    llm = llm_wolfram or llm_deepseek or llm_gpt
+    llm_crosscheck = _perplexity_llm() or _make_llm(
+        "perplexity/sonar-pro", "PERPLEXITY_API_KEY", "gpt-4o-mini", "OPENAI_API_KEY"
+    )
+    llm = llm_wolfram or llm_deepseek or llm_crosscheck
     if llm is None:
         raise RuntimeError("No valid LLM key found for model math audit.")
 
@@ -160,8 +162,8 @@ def main() -> int:
         allow_delegation=False,
     )
 
-    gpt_agent = Agent(
-        role="GPT Cross-Check Auditor",
+    crosscheck_agent = Agent(
+        role="Perplexity Cross-Check Auditor",
         goal=(
             "Cross-check the prior two audits, reject false positives, and decide which findings are truly "
             "likely to affect model outputs or create misleading error volume."
@@ -169,7 +171,7 @@ def main() -> int:
         backstory=(
             "You are a careful reviewer. You separate expected simulation noise from genuine model design defects."
         ),
-        llm=llm_gpt or llm,
+        llm=llm_crosscheck or llm,
         verbose=True,
         allow_delegation=False,
     )
@@ -181,7 +183,7 @@ def main() -> int:
             "expected-not-a-bug warnings, and priority recommendations."
         ),
         backstory="You write executive-ready technical audit summaries with findings first.",
-        llm=llm_gpt or llm,
+        llm=llm_crosscheck or llm,
         verbose=True,
         allow_delegation=False,
     )
@@ -218,7 +220,7 @@ def main() -> int:
             "stress testing rather than bugs. If a prior finding looks weak or speculative, reject it."
         ),
         expected_output="Markdown list of confirmed findings and rejected false positives.",
-        agent=gpt_agent,
+        agent=crosscheck_agent,
         context=[t1, t2],
     )
 
@@ -236,7 +238,7 @@ def main() -> int:
     )
 
     crew = Crew(
-        agents=[wolfram_agent, deepseek_agent, gpt_agent, writer_agent],
+        agents=[wolfram_agent, deepseek_agent, crosscheck_agent, writer_agent],
         tasks=[t1, t2, t3, t4],
         process=Process.sequential,
         verbose=True,

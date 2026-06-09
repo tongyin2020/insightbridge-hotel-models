@@ -46,18 +46,9 @@
 
 | 文件 | 功能 |
 |------|------|
-| `hotel_data_collector.py` | 76家酒店真实数据采集器（每天09:00/22:00）|
+| `hotel_data_collector.py` | 76家酒店真实数据采集器 |
 | `acquisition_mdp.py` | 客户获取MDP决策引擎 |
 | `sentiment_engine.py` | 声誉情感分析引擎 |
-
----
-
-## 每日报告层
-**目录：** `daily_report/`
-
-| 文件 | 功能 |
-|------|------|
-| `daily_report.py` | 每日09:00微信推送（9个模型全覆盖）|
 
 ---
 
