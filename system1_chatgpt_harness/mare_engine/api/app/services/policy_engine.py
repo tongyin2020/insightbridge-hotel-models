@@ -131,7 +131,8 @@ class CompetitorDeviationRule(PolicyRule):
     """Flag if price deviates more than a threshold from competitor set."""
 
     name = "competitor_deviation"
-    # 业务口径(2026-06-08): 竞对偏差超过20%即应报警
+    # 业务口径(2026-06-09): 竞对偏差超过20%进入黄灯预警区
+    # 目的：保留市场纪律，但不要与GM审批阈值完全重叠
     max_deviation_pct: float = 0.20
 
     def evaluate(self, ctx: PricingContext) -> Optional[Violation]:
@@ -270,8 +271,9 @@ class GMApprovalRule(PolicyRule):
     """Require GM approval for large price moves."""
 
     name = "gm_approval"
-    # 业务口径(2026-06-08): 大于20%的调价必须走GM审批
-    threshold_pct: float = 0.20
+    # 业务口径(2026-06-09): 20%先预警，28%再进入GM审批
+    # 这样 20%-28% 成为可人工复核的黄灯区，避免告警与审批完全重叠
+    threshold_pct: float = 0.28
 
     def evaluate(self, ctx: PricingContext) -> Optional[Violation]:
         if ctx.base_price <= 0:
