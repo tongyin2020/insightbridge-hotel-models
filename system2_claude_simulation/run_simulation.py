@@ -48,7 +48,7 @@ from model_refinement import (
     record_director_outcome,
 )
 
-# ── HROS V6 引擎（RevPAR优化 + 学习循环 + 收益归因）────────────────────────
+# ── HROS V6 引擎（RevPAR优化 + 收益归因）────────────────────────
 _V6_ENGINE_DIR = Path(__file__).resolve().parent.parent / "共用_HROS_V6引擎"
 _V6_OK = False
 try:
@@ -65,10 +65,8 @@ try:
     from hros_v6.crm_guardrails import CRMGuardrails as _CRMGuard
     from hros_v6.selfacq_engine_v6 import SelfACQEngineV6 as _SelfACQV6
     from hros_v6.revenue_attribution_engine import RevenueAttributionEngine as _AttrEngine
-    from hotel_learning_loop_pipeline import calibrate_all_hotels as _calibrate_hotels
-    from hotel_learning_loop_pipeline import get_baseline_adr as _get_baseline_adr
     _V6_OK = True
-    print("✓ HROS V6 引擎已加载（含 HotelLearningLoop 周度校准）")
+    print("✓ HROS V6 引擎已加载")
 except Exception as _v6_err:
     print(f"⚠ HROS V6 未加载（继续V5）: {_v6_err}")
 
@@ -115,10 +113,22 @@ except ImportError:
             predicted_trevpar=candidate_price*0.72, baseline_trevpar=market_price*0.72,
             true_lift_pct=0.0, revpar_lift_pct=0.0, elasticity_used=0.0,
             elasticity_profile="unavailable", max_price_premium=0.0, optimal_occupancy=0.72,
+            ml_enabled=False, ml_elasticity_multiplier=1.0, ml_premium_delta=0.0,
+            ml_occupancy_delta=0.0, ml_state_version=0,
             ancillary_profile="unavailable", ancillary_ratio_used=0.0,
             ancillary_margin_used=0.0, ancillary_per_occ=0.0,
             data_source="unavailable", search_steps=0
         )
+
+try:
+    from mare_ml_layer import score_mare_outcome as _score_mare_outcome, update_adjustments as _update_mare_adjustments
+    _MARE_ML_FEEDBACK_OK = True
+except ImportError:
+    _MARE_ML_FEEDBACK_OK = False
+    def _score_mare_outcome(result, anomalies):
+        return False
+    def _update_mare_adjustments(decision, success):
+        return None
 
 
 def compute_dynamic_base_price(hotel_id: str, star: int,
@@ -994,6 +1004,11 @@ def run_3star_test(hotel: dict, signal: dict, real_data: dict,
         result["elasticity_profile"]  = er.elasticity_profile
         result["max_price_premium"]   = er.max_price_premium
         result["optimal_occupancy_target"] = er.optimal_occupancy
+        result["ml_enabled"]          = er.ml_enabled
+        result["ml_elasticity_multiplier"] = er.ml_elasticity_multiplier
+        result["ml_premium_delta"]    = er.ml_premium_delta
+        result["ml_occupancy_delta"]  = er.ml_occupancy_delta
+        result["ml_state_version"]    = er.ml_state_version
         result["ancillary_profile"]   = er.ancillary_profile
         result["ancillary_ratio_used"] = er.ancillary_ratio_used
         result["ancillary_margin_used"] = er.ancillary_margin_used
@@ -1689,6 +1704,19 @@ def main():
             try:
                 result = run_3star_test(hotel, signal, rd, scenario)
                 anomalies = detect_anomalies(hotel, result, signal, "MARE_ALL")
+                if _MARE_ML_FEEDBACK_OK and result.get("ml_enabled"):
+                    try:
+                        from mare_ml_layer import MareMLDecision
+                        decision = MareMLDecision(
+                            profile_name=str(result.get("elasticity_profile") or "unknown"),
+                            elasticity_multiplier=float(result.get("ml_elasticity_multiplier") or 1.0),
+                            premium_delta=float(result.get("ml_premium_delta") or 0.0),
+                            occupancy_delta=float(result.get("ml_occupancy_delta") or 0.0),
+                            state_version=int(result.get("ml_state_version") or 0),
+                        )
+                        _update_mare_adjustments(decision, _score_mare_outcome(result, anomalies))
+                    except Exception:
+                        pass
                 rec_price = result.get("recommended_price", 0)
                 mare_output = dict(result)
                 mare_output.update({
@@ -1808,22 +1836,6 @@ def main():
                 pass
 
         conn.commit()
-
-        # ── HotelLearningLoop 周度校准（每168小时 = 1模拟周）──────────────
-        if _V6_OK and (hour + 1) % 168 == 0:
-            _week_idx = (hour + 1) // 168 - 1
-            _all_hids = [h["hotel_id"] for h in ALL_HOTELS]
-            try:
-                _cal_res = _calibrate_hotels(_all_hids, str(DB_PATH), _week_idx)
-                _updated = sum(1 for v in _cal_res.values()
-                               if v.get("last_calibration_week") == f"sim_week_{_week_idx+1:02d}")
-                _sample_adr = next(
-                    (v.get("baseline_adr") for v in _cal_res.values() if v.get("baseline_adr")), 0
-                )
-                print(f"\n  [V6学习] 第{_week_idx+1}周校准 | 更新{_updated}/{len(_all_hids)}家 "
-                      f"| 样本ADR≈{_sample_adr:.0f} MOP | 状态写入 hotel_profiles_v6.json")
-            except Exception as _e:
-                print(f"  [V6学习] 周度校准失败（不影响主流程）: {_e}")
 
         # ── 控制台进度输出 ────────────────────────────────────────────────
         total_runs_hour, failure_count, anomaly_count = _summarize_hour_health(hour_results)

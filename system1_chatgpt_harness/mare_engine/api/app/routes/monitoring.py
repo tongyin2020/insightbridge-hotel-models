@@ -183,10 +183,10 @@ def system_metrics(
             "positive_revenue_outcomes": positive_outcomes,
             "positive_rate": f"{(positive_outcomes / max(total_feedback, 1) * 100):.1f}%",
         },
-        "learning_loop": {
+        "ml_feedback_status": {
             "feedback_collected": total_feedback,
-            "min_for_retraining": 20,
-            "ready_to_retrain": training_ready,
+            "min_for_stable_feedback": 20,
+            "ready_for_stable_learning": training_ready,
         },
         "system": {
             "uptime_seconds": int(time.time() - _startup_time),

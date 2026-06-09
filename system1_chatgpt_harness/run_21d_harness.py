@@ -48,6 +48,16 @@ from system2_claude_simulation.run_simulation import (  # noqa: E402
     run_director_crm_test,
 )
 
+try:
+    from mare_ml_layer import score_mare_outcome as _score_mare_outcome, update_adjustments as _update_mare_adjustments
+    _MARE_ML_FEEDBACK_OK = True
+except ImportError:
+    _MARE_ML_FEEDBACK_OK = False
+    def _score_mare_outcome(result, anomalies):
+        return False
+    def _update_mare_adjustments(decision, success):
+        return None
+
 
 @dataclass(frozen=True)
 class HarnessScenario:
@@ -242,6 +252,19 @@ def run_cycle(cycle_no: int, jsonl_path: Path, summary_path: Path, counters: dic
                             result.setdefault("predicted_revpar", round(result["recommended_price"] * scenario.current_occupancy, 2))
                             result.setdefault("expected_revenue_lift", f"{float(result.get('elasticity_lift_pct') or 0.0):+.2f}%")
                         issues = detect_anomalies(hotel_base, result, signal, "MARE_ALL" if model_name == "mare" else "DIRECTOR_CRM_ALL")
+                        if model_name == "mare" and _MARE_ML_FEEDBACK_OK and result.get("ml_enabled"):
+                            try:
+                                from mare_ml_layer import MareMLDecision
+                                decision = MareMLDecision(
+                                    profile_name=str(result.get("elasticity_profile") or "unknown"),
+                                    elasticity_multiplier=float(result.get("ml_elasticity_multiplier") or 1.0),
+                                    premium_delta=float(result.get("ml_premium_delta") or 0.0),
+                                    occupancy_delta=float(result.get("ml_occupancy_delta") or 0.0),
+                                    state_version=int(result.get("ml_state_version") or 0),
+                                )
+                                _update_mare_adjustments(decision, _score_mare_outcome(result, issues))
+                            except Exception:
+                                pass
                         payload = {
                             "timestamp_utc": run_ts,
                             "cycle": cycle_no,

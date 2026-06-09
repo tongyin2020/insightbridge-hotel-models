@@ -198,25 +198,20 @@ confidence = clamp(95 - 0.30×risk + 0.05×quality×100, 40, 95)
 
 ### 管道流程
 ```
-Week i DB records
-    ↓ build_records_from_sqlite()
-WeeklyHotelRecord[]
-    ↓ HotelLearningLoop.summarize()
-{adr, channel_mix, room_type_adr, ...}
-    ↓ HotelLearningLoop.update_hotel_profile(α=0.25)
-updated_profile {baseline_adr(new)}
-    ↓ save_profiles()  [atomic tmp-file replace]
-hotel_profiles_v6.json
-    ↓ get_baseline_adr(hotel_id)
-float → 下一周 RevenueDecisionLayerV6.optimize() 的 market_signal.market_price 参照
+Static Macau baseline profile
+    ↓ profile-level MARE ML overlay
+{elasticity_multiplier, premium_delta, occupancy_delta}
+    ↓ bounded online feedback update
+mare_ml_state.json
+    ↓ next MARE optimization cycle
+updated profile-level decision priors
 ```
 
-### 校准状态机
+### 当前学习状态
 ```
-calibration_weeks < 4 → status = "learning"
-calibration_weeks ≥ 4 → status = "first_calibration"
+per profile -> bandit arms -> success/failure feedback
 ```
-经济含义：≥4 周（≥28 天）才开始生效为定价基准，避免噪声数据过早影响策略。
+经济含义：学习发生在“市场档位”层，而不是单家酒店层，避免小样本和极端场景噪声误导定价主逻辑。
 
 ---
 

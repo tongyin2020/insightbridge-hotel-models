@@ -1,8 +1,8 @@
 """
 InsightBridge Price Elasticity Engine  v1.0
 ============================================
-第二阶段：模拟弹性系数驱动的 RevPAR / 轻量 TRevPAR 最优化
-第三阶段接口：从 pms_feedback 表拟合真实弹性曲线（预留）
+第二阶段：静态澳门基线驱动的 RevPAR / 轻量 TRevPAR 最优化
+第三阶段：接入 MARE 新自学习层，按市场档位做小幅在线校准
 
 核心逻辑
 ---------
@@ -27,22 +27,13 @@ InsightBridge Price Elasticity Engine  v1.0
   peak        × 0.65   (节假日/长周末)
   normal      × 1.00
   low         × 1.30   (淡季，客户选择余地大)
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Phase 3 PMS 真实数据接口（预留）
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-当酒店 PMS 数据接入后，调用 ElasticityEngine.load_from_pms(db_path) 即可
-用真实历史订单拟合弹性系数，替换模拟值，无需改动任何调用代码。
-
-PMS 数据表结构见 create_pms_schema() 函数。
 """
 
 from __future__ import annotations
-import sqlite3
 import logging
 import json
+import os
 from pathlib import Path
-from datetime import datetime
 from typing import NamedTuple
 from functools import lru_cache
 
@@ -64,6 +55,14 @@ _DEFAULT_ANCILLARY_MARGIN = 0.30
 _DEFAULT_ELASTICITY = 1.0
 _DEFAULT_MAX_PRICE_PREMIUM = 0.0
 _DEFAULT_OPTIMAL_OCCUPANCY = 0.80
+
+try:
+    from mare_ml_layer import choose_adjustments as _ml_choose_adjustments
+    _ML_OK = True
+except Exception:
+    _ML_OK = False
+    def _ml_choose_adjustments(*args, **kwargs):
+        return None
 
 # 按现有76酒店名单，对澳门5★综合度假村做显式识别。
 _INTEGRATED_RESORT_IDS = {
@@ -126,6 +125,11 @@ class ElasticityResult(NamedTuple):
     elasticity_profile:   str     # 采用的澳门静态弹性档位
     max_price_premium:    float   # 相对市场价的最高溢价上限
     optimal_occupancy:    float   # 收益最大化目标入住率
+    ml_enabled:           bool    # 是否启用 MARE 自学习层
+    ml_elasticity_multiplier: float  # 对静态弹性的学习修正
+    ml_premium_delta:     float   # 对价格溢价上限的学习修正
+    ml_occupancy_delta:   float   # 对最优入住率目标的学习修正
+    ml_state_version:     int     # 自学习状态版本
     ancillary_profile:    str     # 采用的澳门总贡献参数档位
     ancillary_ratio_used: float   # 当前使用的非房/房费比
     ancillary_margin_used: float  # 当前使用的非房毛利率
@@ -138,13 +142,10 @@ class ElasticityEngine:
     """
     价格弹性引擎。
 
-    模拟阶段直接实例化即可使用。
-    接入真实 PMS 数据后调用 load_from_pms(db_path) 更新系数。
+    先使用澳门静态基线，再叠加 MARE 自学习层的小幅修正。
     """
 
     def __init__(self):
-        # 弹性系数存储：key=(hotel_id or (star,district)), value={"e": float, "source": str}
-        self._coefficients: dict = {}
         self._data_source = "macau_static"
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -182,7 +183,17 @@ class ElasticityEngine:
         if market_price <= 0:
             market_price = float(_PRICE_FLOOR.get(star, 420))
 
-        elasticity_profile, elasticity, max_price_premium, optimal_occupancy = self._get_revenue_profile(
+        (
+            elasticity_profile,
+            elasticity,
+            max_price_premium,
+            optimal_occupancy,
+            ml_enabled,
+            ml_elasticity_multiplier,
+            ml_premium_delta,
+            ml_occupancy_delta,
+            ml_state_version,
+        ) = self._get_revenue_profile(
             star=star,
             hotel_id=hotel_id,
             season=season,
@@ -250,6 +261,11 @@ class ElasticityEngine:
             elasticity_profile  = elasticity_profile,
             max_price_premium   = round(max_price_premium, 4),
             optimal_occupancy   = round(optimal_occupancy, 4),
+            ml_enabled          = ml_enabled,
+            ml_elasticity_multiplier = round(ml_elasticity_multiplier, 4),
+            ml_premium_delta    = round(ml_premium_delta, 4),
+            ml_occupancy_delta  = round(ml_occupancy_delta, 4),
+            ml_state_version    = ml_state_version,
             ancillary_profile   = ancillary_profile,
             ancillary_ratio_used= round(ancillary_ratio, 4),
             ancillary_margin_used=round(ancillary_margin, 4),
@@ -257,87 +273,6 @@ class ElasticityEngine:
             data_source         = self._data_source,
             search_steps        = steps,
         )
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # Phase 3 接口：从真实 PMS 数据拟合弹性系数
-    # ──────────────────────────────────────────────────────────────────────────
-
-    def load_from_pms(self, db_path: str | Path) -> int:
-        """
-        从 pms_feedback 表拟合真实弹性系数。
-        返回成功拟合的酒店数量。
-
-        调用时机：每天凌晨 PMS 数据同步后调用一次即可。
-        最少需要 30 天、每家酒店 30 条以上记录才会替换模拟系数。
-
-        数据接入方式：
-          1. 酒店系统通过 API 推送 → insert into pms_feedback
-          2. 批量 CSV 导入        → import_pms_csv(csv_path, db_path)
-          3. PMS 直连（Opera/FIDELIO/PMS Cloud）→ 后续集成
-        """
-        db_path = Path(db_path)
-        if not db_path.exists():
-            log.warning(f"PMS 数据库不存在: {db_path}")
-            return 0
-
-        fitted = 0
-        try:
-            conn = sqlite3.connect(str(db_path), timeout=10)
-
-            # 按酒店分组拟合：OLS 回归 price_premium → occupancy_rate
-            rows = conn.execute("""
-                SELECT hotel_id, star,
-                       (price_charged - market_price) / market_price AS premium,
-                       occupancy_rate
-                FROM pms_feedback
-                WHERE source IN ('pms_live', 'pms_import')
-                  AND occupancy_rate BETWEEN 0.05 AND 1.0
-                  AND market_price > 0
-                  AND price_charged > 0
-                ORDER BY hotel_id
-            """).fetchall()
-            conn.close()
-
-            # 按酒店聚合
-            from collections import defaultdict
-            hotel_data: dict[str, list] = defaultdict(list)
-            for hotel_id, star, premium, occ in rows:
-                hotel_data[hotel_id].append((premium, occ, star))
-
-            for hotel_id, points in hotel_data.items():
-                if len(points) < 30:
-                    continue   # 样本不足，保留模拟系数
-                premiums = [p[0] for p in points]
-                occs     = [p[1] for p in points]
-                star     = points[0][2]
-                base_occ = sum(o for o in occs if abs(premiums[occs.index(o)]) < 0.03) / max(
-                    1, sum(1 for p in premiums if abs(p) < 0.03))
-
-                # 简单 OLS: elasticity = -Δocc/Δpremium
-                n       = len(premiums)
-                mean_p  = sum(premiums) / n
-                mean_o  = sum(occs) / n
-                cov     = sum((premiums[i] - mean_p) * (occs[i] - mean_o) for i in range(n))
-                var_p   = sum((p - mean_p) ** 2 for p in premiums)
-                if var_p > 0:
-                    slope = cov / var_p   # negative slope expected
-                    elasticity = max(0.05, min(2.0, -slope))
-                    self._coefficients[hotel_id] = {
-                        "e":       elasticity,
-                        "source":  "fitted_pms",
-                        "samples": n,
-                        "star":    star,
-                    }
-                    fitted += 1
-
-            if fitted > 0:
-                self._data_source = "fitted_pms"
-                log.info(f"[弹性引擎] 已从PMS数据拟合 {fitted} 家酒店弹性系数")
-
-        except Exception as exc:
-            log.warning(f"[弹性引擎] PMS拟合失败: {exc}")
-
-        return fitted
 
     # ──────────────────────────────────────────────────────────────────────────
     # 内部辅助
@@ -350,13 +285,45 @@ class ElasticityEngine:
         hotel_id: str | None,
         season: str,
         demand_level: str,
-    ) -> tuple[str, float, float, float]:
+    ) -> tuple[str, float, float, float, bool, float, float, float, int]:
         profile_name = self._resolve_revenue_profile(star, hotel_id, season, demand_level)
         profile = _load_macau_revenue_profiles().get(profile_name, {})
         elasticity = float(profile.get("elasticity") or _DEFAULT_ELASTICITY)
         max_premium = float(profile.get("max_price_premium") or _DEFAULT_MAX_PRICE_PREMIUM)
         optimal_occ = float(profile.get("optimal_occupancy") or _DEFAULT_OPTIMAL_OCCUPANCY)
-        return profile_name, elasticity, max_premium, optimal_occ
+        ml_enabled = False
+        ml_elasticity_multiplier = 1.0
+        ml_premium_delta = 0.0
+        ml_occupancy_delta = 0.0
+        ml_state_version = 0
+
+        if _ML_OK and os.getenv("MARE_ML_ENABLED", "1").strip().lower() not in {"0", "false", "off", "no"}:
+            deterministic = os.getenv("MARE_ML_DETERMINISTIC", "0").strip().lower() in {"1", "true", "yes", "on"}
+            try:
+                decision = _ml_choose_adjustments(profile_name, deterministic=deterministic)
+                if decision is not None:
+                    ml_enabled = True
+                    ml_elasticity_multiplier = float(decision.elasticity_multiplier)
+                    ml_premium_delta = float(decision.premium_delta)
+                    ml_occupancy_delta = float(decision.occupancy_delta)
+                    ml_state_version = int(decision.state_version)
+                    elasticity = max(0.10, min(3.00, elasticity * ml_elasticity_multiplier))
+                    max_premium = max(-0.10, min(0.60, max_premium + ml_premium_delta))
+                    optimal_occ = max(0.60, min(0.95, optimal_occ + ml_occupancy_delta))
+            except Exception as exc:
+                log.warning(f"[MARE-ML] 自学习层降级为静态基线: {exc}")
+
+        return (
+            profile_name,
+            elasticity,
+            max_premium,
+            optimal_occ,
+            ml_enabled,
+            ml_elasticity_multiplier,
+            ml_premium_delta,
+            ml_occupancy_delta,
+            ml_state_version,
+        )
 
     def _get_hotel_anchor(self, hotel_id: str | None) -> float | None:
         if not hotel_id:
@@ -417,116 +384,6 @@ class ElasticityEngine:
         if season_key in ("low",) or demand_key == "LOW":
             return "3star_ota_low"
         return "3star_ota_shoulder"
-
-
-# ── PMS 数据库建表脚本（Phase 3 接口）────────────────────────────────────────
-
-PMS_SCHEMA_SQL = """
--- ════════════════════════════════════════════════════════════════════
--- Phase 3 PMS 真实数据接入表结构
--- 写入方式：① API推送  ② CSV导入  ③ PMS直连（Opera/Fidelio等）
--- ════════════════════════════════════════════════════════════════════
-
-CREATE TABLE IF NOT EXISTS pms_feedback (
-    id                INTEGER PRIMARY KEY AUTOINCREMENT,
-    hotel_id          TEXT    NOT NULL,           -- MAC_5DX_WYNN_001 格式
-    star              INTEGER NOT NULL,           -- 3/4/5
-    district          TEXT,                       -- COT/TAIPA/NAPE/INNER
-    stay_date         DATE    NOT NULL,           -- 入住日期 YYYY-MM-DD
-    price_charged     REAL    NOT NULL,           -- 当天实际挂牌价 (MOP)
-    market_price      REAL,                       -- 当天市场均价基准 (MOP)
-    rooms_available   INTEGER,                    -- 当天可用间数
-    rooms_sold        INTEGER,                    -- 当天实际售出间数
-    occupancy_rate    REAL,                       -- 实际入住率 [0,1]
-    adr               REAL,                       -- 实际平均房价 (MOP)
-    revpar            REAL,                       -- 实际 RevPAR (MOP)
-    channel           TEXT,                       -- direct/ota_bcom/ota_agoda/corporate/walk_in
-    booking_window    INTEGER,                    -- 提前预订天数
-    cancellation_rate REAL,                       -- 当日取消率 [0,1]
-    season            TEXT,                       -- super_peak/peak/normal/low
-    is_holiday        INTEGER DEFAULT 0,          -- 是否节假日
-    is_weekend        INTEGER DEFAULT 0,
-    source            TEXT    DEFAULT 'pms_live', -- pms_live/pms_import/simulated
-    notes             TEXT,
-    created_at        TEXT    DEFAULT (datetime('now'))
-);
-
-CREATE INDEX IF NOT EXISTS idx_pms_hotel_date   ON pms_feedback(hotel_id, stay_date);
-CREATE INDEX IF NOT EXISTS idx_pms_star_district ON pms_feedback(star, district);
-
--- 拟合结果缓存表（load_from_pms 写入）
-CREATE TABLE IF NOT EXISTS elasticity_coefficients (
-    hotel_id      TEXT PRIMARY KEY,
-    star          INTEGER,
-    district      TEXT,
-    elasticity    REAL    NOT NULL,           -- 拟合弹性系数
-    base_occupancy REAL,                      -- 市价时基准入住率
-    confidence    REAL DEFAULT 0.0,           -- 拟合置信度 [0,1]
-    sample_size   INTEGER DEFAULT 0,          -- 训练样本量
-    source        TEXT DEFAULT 'simulated',   -- simulated/fitted_pms
-    r_squared     REAL,                       -- OLS 拟合优度
-    last_updated  TEXT DEFAULT (datetime('now'))
-);
-"""
-
-
-def create_pms_schema(db_path: str | Path):
-    """在指定数据库创建 Phase 3 PMS 接入表（幂等，可重复调用）"""
-    conn = sqlite3.connect(str(db_path), timeout=10)
-    conn.executescript(PMS_SCHEMA_SQL)
-    conn.commit()
-    conn.close()
-    log.info(f"[弹性引擎] PMS接入表已创建: {db_path}")
-
-
-def import_pms_csv(csv_path: str | Path, db_path: str | Path) -> int:
-    """
-    Phase 3 辅助函数：从 CSV 批量导入 PMS 历史数据。
-
-    CSV 列顺序：
-    hotel_id, star, district, stay_date, price_charged, market_price,
-    rooms_available, rooms_sold, occupancy_rate, adr, revpar,
-    channel, booking_window, cancellation_rate, season, is_holiday, is_weekend
-
-    返回成功导入行数。
-    """
-    import csv
-    create_pms_schema(db_path)
-    conn = sqlite3.connect(str(db_path), timeout=10)
-    count = 0
-    with open(csv_path, newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            try:
-                conn.execute("""
-                    INSERT OR IGNORE INTO pms_feedback
-                    (hotel_id, star, district, stay_date, price_charged, market_price,
-                     rooms_available, rooms_sold, occupancy_rate, adr, revpar,
-                     channel, booking_window, cancellation_rate, season,
-                     is_holiday, is_weekend, source)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'pms_import')
-                """, (
-                    row["hotel_id"], int(row["star"]), row.get("district"),
-                    row["stay_date"], float(row["price_charged"]),
-                    float(row.get("market_price") or 0),
-                    int(row.get("rooms_available") or 0),
-                    int(row.get("rooms_sold") or 0),
-                    float(row.get("occupancy_rate") or 0),
-                    float(row.get("adr") or 0),
-                    float(row.get("revpar") or 0),
-                    row.get("channel"), int(row.get("booking_window") or 0),
-                    float(row.get("cancellation_rate") or 0),
-                    row.get("season"), int(row.get("is_holiday") or 0),
-                    int(row.get("is_weekend") or 0),
-                ))
-                count += 1
-            except Exception as exc:
-                log.warning(f"CSV导入跳过行: {exc}")
-    conn.commit()
-    conn.close()
-    log.info(f"[弹性引擎] CSV导入完成: {count} 行 → {db_path}")
-    return count
-
 
 # ── 模块级单例（三个系统共用同一实例）────────────────────────────────────────
 _engine = ElasticityEngine()

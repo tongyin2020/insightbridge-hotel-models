@@ -1,0 +1,318 @@
+{
+  "meta": {
+    "version": 1,
+    "created_at": "2026-06-09T17:56:12.047858+00:00",
+    "updated_at": "2026-06-09T17:56:34.104923+00:00",
+    "description": "MARE profile-level contextual bandit state"
+  },
+  "profiles": {
+    "3star_ota_shoulder": {
+      "bandit": {
+        "elasticity_multiplier": {
+          "0.9000": {
+            "alpha": 13.0,
+            "beta": 44.0
+          },
+          "0.9700": {
+            "alpha": 15.0,
+            "beta": 48.0
+          },
+          "1.0000": {
+            "alpha": 3.0,
+            "beta": 21.0
+          },
+          "1.0300": {
+            "alpha": 17.0,
+            "beta": 52.0
+          },
+          "1.1000": {
+            "alpha": 6.0,
+            "beta": 29.0
+          }
+        },
+        "premium_delta": {
+          "-0.0500": {
+            "alpha": 10.0,
+            "beta": 43.0
+          },
+          "-0.0200": {
+            "alpha": 4.0,
+            "beta": 20.0
+          },
+          "0.0000": {
+            "alpha": 17.0,
+            "beta": 60.0
+          },
+          "0.0200": {
+            "alpha": 12.0,
+            "beta": 38.0
+          },
+          "0.0500": {
+            "alpha": 11.0,
+            "beta": 33.0
+          }
+        },
+        "occupancy_delta": {
+          "-0.0400": {
+            "alpha": 39.0,
+            "beta": 97.0
+          },
+          "-0.0200": {
+            "alpha": 9.0,
+            "beta": 43.0
+          },
+          "0.0000": {
+            "alpha": 2.0,
+            "beta": 18.0
+          },
+          "0.0200": {
+            "alpha": 2.0,
+            "beta": 19.0
+          },
+          "0.0400": {
+            "alpha": 2.0,
+            "beta": 17.0
+          }
+        }
+      },
+      "stats": {
+        "decisions": 228,
+        "successes": 44,
+        "failures": 184,
+        "last_success_at": "2026-06-09T17:56:33.793149+00:00",
+        "last_failure_at": "2026-06-09T17:56:33.797937+00:00"
+      }
+    },
+    "5star_business_mice": {
+      "bandit": {
+        "elasticity_multiplier": {
+          "0.9000": {
+            "alpha": 17.0,
+            "beta": 45.0
+          },
+          "0.9700": {
+            "alpha": 13.0,
+            "beta": 26.0
+          },
+          "1.0000": {
+            "alpha": 19.0,
+            "beta": 42.0
+          },
+          "1.0300": {
+            "alpha": 41.0,
+            "beta": 82.0
+          },
+          "1.1000": {
+            "alpha": 7.0,
+            "beta": 26.0
+          }
+        },
+        "premium_delta": {
+          "-0.0500": {
+            "alpha": 5.0,
+            "beta": 20.0
+          },
+          "-0.0200": {
+            "alpha": 3.0,
+            "beta": 11.0
+          },
+          "0.0000": {
+            "alpha": 39.0,
+            "beta": 69.0
+          },
+          "0.0200": {
+            "alpha": 15.0,
+            "beta": 45.0
+          },
+          "0.0500": {
+            "alpha": 35.0,
+            "beta": 76.0
+          }
+        },
+        "occupancy_delta": {
+          "-0.0400": {
+            "alpha": 7.0,
+            "beta": 27.0
+          },
+          "-0.0200": {
+            "alpha": 64.0,
+            "beta": 111.0
+          },
+          "0.0000": {
+            "alpha": 16.0,
+            "beta": 46.0
+          },
+          "0.0200": {
+            "alpha": 6.0,
+            "beta": 20.0
+          },
+          "0.0400": {
+            "alpha": 4.0,
+            "beta": 17.0
+          }
+        }
+      },
+      "stats": {
+        "decisions": 298,
+        "successes": 87,
+        "failures": 211,
+        "last_success_at": "2026-06-09T17:56:34.005060+00:00",
+        "last_failure_at": "2026-06-09T17:56:33.994702+00:00"
+      }
+    },
+    "5star_resort_leisure_shoulder": {
+      "bandit": {
+        "elasticity_multiplier": {
+          "0.9000": {
+            "alpha": 15.0,
+            "beta": 37.0
+          },
+          "0.9700": {
+            "alpha": 6.0,
+            "beta": 26.0
+          },
+          "1.0000": {
+            "alpha": 31.0,
+            "beta": 71.0
+          },
+          "1.0300": {
+            "alpha": 5.0,
+            "beta": 24.0
+          },
+          "1.1000": {
+            "alpha": 6.0,
+            "beta": 19.0
+          }
+        },
+        "premium_delta": {
+          "-0.0500": {
+            "alpha": 4.0,
+            "beta": 15.0
+          },
+          "-0.0200": {
+            "alpha": 3.0,
+            "beta": 16.0
+          },
+          "0.0000": {
+            "alpha": 26.0,
+            "beta": 62.0
+          },
+          "0.0200": {
+            "alpha": 11.0,
+            "beta": 31.0
+          },
+          "0.0500": {
+            "alpha": 19.0,
+            "beta": 53.0
+          }
+        },
+        "occupancy_delta": {
+          "-0.0400": {
+            "alpha": 14.0,
+            "beta": 32.0
+          },
+          "-0.0200": {
+            "alpha": 31.0,
+            "beta": 68.0
+          },
+          "0.0000": {
+            "alpha": 6.0,
+            "beta": 21.0
+          },
+          "0.0200": {
+            "alpha": 7.0,
+            "beta": 32.0
+          },
+          "0.0400": {
+            "alpha": 5.0,
+            "beta": 24.0
+          }
+        }
+      },
+      "stats": {
+        "decisions": 220,
+        "successes": 53,
+        "failures": 167,
+        "last_success_at": "2026-06-09T17:56:34.010146+00:00",
+        "last_failure_at": "2026-06-09T17:56:33.967124+00:00"
+      }
+    },
+    "4star_leisure_shoulder": {
+      "bandit": {
+        "elasticity_multiplier": {
+          "0.9000": {
+            "alpha": 17.0,
+            "beta": 45.0
+          },
+          "0.9700": {
+            "alpha": 24.0,
+            "beta": 55.0
+          },
+          "1.0000": {
+            "alpha": 11.0,
+            "beta": 35.0
+          },
+          "1.0300": {
+            "alpha": 9.0,
+            "beta": 32.0
+          },
+          "1.1000": {
+            "alpha": 3.0,
+            "beta": 22.0
+          }
+        },
+        "premium_delta": {
+          "-0.0500": {
+            "alpha": 9.0,
+            "beta": 35.0
+          },
+          "-0.0200": {
+            "alpha": 16.0,
+            "beta": 44.0
+          },
+          "0.0000": {
+            "alpha": 9.0,
+            "beta": 30.0
+          },
+          "0.0200": {
+            "alpha": 13.0,
+            "beta": 39.0
+          },
+          "0.0500": {
+            "alpha": 17.0,
+            "beta": 41.0
+          }
+        },
+        "occupancy_delta": {
+          "-0.0400": {
+            "alpha": 25.0,
+            "beta": 59.0
+          },
+          "-0.0200": {
+            "alpha": 28.0,
+            "beta": 71.0
+          },
+          "0.0000": {
+            "alpha": 7.0,
+            "beta": 29.0
+          },
+          "0.0200": {
+            "alpha": 2.0,
+            "beta": 15.0
+          },
+          "0.0400": {
+            "alpha": 2.0,
+            "beta": 15.0
+          }
+        }
+      },
+      "stats": {
+        "decisions": 233,
+        "successes": 54,
+        "failures": 179,
+        "last_success_at": "2026-06-09T17:56:34.094790+00:00",
+        "last_failure_at": "2026-06-09T17:56:34.104645+00:00"
+      }
+    }
+  }
+}

@@ -60,8 +60,6 @@ try:
     from hros_v6.crm_guardrails import CRMGuardrails as _CRMGuard
     from hros_v6.selfacq_engine_v6 import SelfACQEngineV6 as _SelfACQV6
     from hros_v6.revenue_attribution_engine import RevenueAttributionEngine as _AttrEngine
-    from hotel_learning_loop_pipeline import calibrate_all_hotels as _calibrate_hotels
-    from hotel_learning_loop_pipeline import get_baseline_adr as _get_baseline_adr
     _V6_OK = True
 except Exception as _v6_err:
     pass
@@ -131,10 +129,22 @@ except ImportError:
             predicted_trevpar=candidate_price*0.72, baseline_trevpar=market_price*0.72,
             true_lift_pct=0.0, revpar_lift_pct=0.0, elasticity_used=0.0,
             elasticity_profile="unavailable", max_price_premium=0.0, optimal_occupancy=0.72,
+            ml_enabled=False, ml_elasticity_multiplier=1.0, ml_premium_delta=0.0,
+            ml_occupancy_delta=0.0, ml_state_version=0,
             ancillary_profile="unavailable", ancillary_ratio_used=0.0,
             ancillary_margin_used=0.0, ancillary_per_occ=0.0,
             data_source="unavailable", search_steps=0
         )
+
+try:
+    from mare_ml_layer import score_mare_outcome as _score_mare_outcome, update_adjustments as _update_mare_adjustments
+    _MARE_ML_FEEDBACK_OK = True
+except ImportError:
+    _MARE_ML_FEEDBACK_OK = False
+    def _score_mare_outcome(result, anomalies):
+        return False
+    def _update_mare_adjustments(decision, success):
+        return None
 
 # ── 切换为澳门旅游局官方76家真实酒店 ─────────────────────────────────────────
 _SIM_DIR_MAIN = str(MODEL_DIR / "system2_claude_simulation")
@@ -497,6 +507,11 @@ def main():
                     r["elasticity_profile"]  = er.elasticity_profile
                     r["max_price_premium"]   = er.max_price_premium
                     r["optimal_occupancy_target"] = er.optimal_occupancy
+                    r["ml_enabled"]          = er.ml_enabled
+                    r["ml_elasticity_multiplier"] = er.ml_elasticity_multiplier
+                    r["ml_premium_delta"]    = er.ml_premium_delta
+                    r["ml_occupancy_delta"]  = er.ml_occupancy_delta
+                    r["ml_state_version"]    = er.ml_state_version
                     r["ancillary_profile"]   = er.ancillary_profile
                     r["ancillary_ratio_used"] = er.ancillary_ratio_used
                     r["ancillary_margin_used"] = er.ancillary_margin_used
@@ -522,6 +537,19 @@ def main():
                         except Exception:
                             r["hotel_profile_version"] = "V5_fallback"
                 anom = detect_anomalies(hotel, r, signal, "MARE_ALL")
+                if _MARE_ML_FEEDBACK_OK and r.get("ml_enabled"):
+                    try:
+                        from mare_ml_layer import MareMLDecision
+                        decision = MareMLDecision(
+                            profile_name=str(r.get("elasticity_profile") or "unknown"),
+                            elasticity_multiplier=float(r.get("ml_elasticity_multiplier") or 1.0),
+                            premium_delta=float(r.get("ml_premium_delta") or 0.0),
+                            occupancy_delta=float(r.get("ml_occupancy_delta") or 0.0),
+                            state_version=int(r.get("ml_state_version") or 0),
+                        )
+                        _update_mare_adjustments(decision, _score_mare_outcome(r, anom))
+                    except Exception:
+                        pass
                 rp = r.get("recommended_price", 0)
                 mare_prices.append(rp)
                 conn.execute(
@@ -543,6 +571,11 @@ def main():
                                  "elasticity_profile": r.get("elasticity_profile"),
                                  "max_price_premium": r.get("max_price_premium"),
                                  "optimal_occupancy_target": r.get("optimal_occupancy_target"),
+                                 "ml_enabled": r.get("ml_enabled"),
+                                 "ml_elasticity_multiplier": r.get("ml_elasticity_multiplier"),
+                                 "ml_premium_delta": r.get("ml_premium_delta"),
+                                 "ml_occupancy_delta": r.get("ml_occupancy_delta"),
+                                 "ml_state_version": r.get("ml_state_version"),
                                  "ancillary_profile": r.get("ancillary_profile"),
                                  "ancillary_ratio_used": r.get("ancillary_ratio_used"),
                                  "ancillary_margin_used": r.get("ancillary_margin_used"),
@@ -741,22 +774,6 @@ def main():
                 conn.commit()
             except Exception as e:
                 print(f"  [CrewAI] 分析失败（继续运行）: {e}")
-
-        # ── HotelLearningLoop 周度校准（每168小时 = 1模拟周）────────────
-        if _V6_OK and (hour + 1) % 168 == 0:
-            _week_idx = (hour + 1) // 168 - 1
-            _all_hids = [h["hotel_id"] for h in ALL_HOTELS]
-            try:
-                _cal_res = _calibrate_hotels(_all_hids, str(DB_PATH), _week_idx)
-                _updated = sum(1 for v in _cal_res.values()
-                               if v.get("last_calibration_week") == f"sim_week_{_week_idx+1:02d}")
-                _sample_adr = next(
-                    (v.get("baseline_adr") for v in _cal_res.values() if v.get("baseline_adr")), 0
-                )
-                print(f"\n  [V6学习] 第{_week_idx+1}周校准 | 更新{_updated}/{len(_all_hids)}家 "
-                      f"| 样本ADR≈{_sample_adr:.0f} MOP | 状态写入 hotel_profiles_v6.json")
-            except Exception as _e:
-                print(f"  [V6学习] 周度校准失败（不影响主流程）: {_e}")
 
         # ── 进度输出 ──────────────────────────────────────────────────
         anomaly_n = sum(1 for _, _, a in hour_results if a)
