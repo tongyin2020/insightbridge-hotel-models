@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """
-InsightBridge 九大模型 — 自动健康检查 + 自愈脚本
-================================================
+InsightBridge 九大模型 — 自动健康检查脚本
+=========================================
 每天 06:00 / 18:00 由 launchd 触发。
 
 检查项目：
   1. System 1 模拟进程是否运行（run_simulation.py）
   2. System 2 harness 是否运行（run_21d_harness.py）
-  3. 守护进程 watchdog_all.py 是否运行
-  4. results.db 是否在最近 2 小时内有写入
-  5. hotel_real_data.db 是否在最近 4 小时内有更新
-  6. nohup.out 是否有新的 CRITICAL 错误
+  3. results.db 是否在最近 2 小时内有写入
+  4. hotel_real_data.db 是否在最近 4 小时内有更新
+  5. nohup.out 是否有新的 CRITICAL 错误
 
-自愈策略：
+处理策略：
   ✅ 可自动修复：进程意外死亡 → 自动重启
   ✅ 可自动修复：数据库超时未更新 → 重启进程
   ✅ 可自动修复：Shifter 缓存过期 → 清除缓存强制刷新
+  ⚠️ 不再启用任何 watchdog / 守护进程自动拉起
   ⚠️ 需人工确认：代码导入错误 / DB 损坏 / 未知异常
                 → 写入 health_issue.flag，停止自动干预，等待人工处理
 
@@ -38,8 +38,6 @@ SIM1_LOG    = SIM1_DIR / "simulation_output.log"
 
 SIM2_SCRIPT = BASE / "system1_chatgpt_harness/run_21d_harness.py"
 REAL_DB     = BASE / "hotel_collector/hotel_real_data.db"
-WATCHDOG_PY = BASE / "watchdog_all.py"
-WATCHDOG_PID= BASE / "watchdog_all.pid"
 SHIFTER_CACHE = SIM1_DIR / "data/shifter_market_cache.json"
 
 HEALTH_LOG  = BASE / "health_check.log"
@@ -116,24 +114,6 @@ def restart_sim1() -> bool:
         return True
     except Exception as e:
         log.error(f"System 1 重启失败: {e}")
-        return False
-
-
-def restart_watchdog() -> bool:
-    """重启守护进程。"""
-    try:
-        proc = subprocess.Popen(
-            [PYTHON, str(WATCHDOG_PY)],
-            cwd=str(BASE),
-            stdout=open(BASE / "watchdog_all.log", "a"),
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
-        WATCHDOG_PID.write_text(str(proc.pid))
-        log.info(f"watchdog_all.py 已重启，新 PID={proc.pid}")
-        return True
-    except Exception as e:
-        log.error(f"watchdog 重启失败: {e}")
         return False
 
 
@@ -228,16 +208,7 @@ def run_health_check():
         else:
             log.warning("System 2 launchctl 重载失败（可能为计划外停止，不标记为人工介入）")
 
-    # ── 检查 3：守护进程 watchdog_all.py ────────────────────────────────────────
-    wd_pid = read_pid(WATCHDOG_PID)
-    if wd_pid and pid_alive(wd_pid):
-        log.info(f"✅ watchdog_all.py 运行正常 (PID={wd_pid})")
-    else:
-        log.warning("⚠️ watchdog_all.py 未运行，自动重启...")
-        if restart_watchdog():
-            auto_fixed.append("watchdog_all.py 已重启")
-
-    # ── 检查 4：results.db 更新时效 ─────────────────────────────────────────────
+    # ── 检查 3：results.db 更新时效 ─────────────────────────────────────────────
     db_age = db_last_row_minutes(SIM1_DB)
     if db_age is None:
         flag_issue("results.db 无法读取", "数据库可能损坏或路径错误")
@@ -255,7 +226,7 @@ def run_health_check():
     else:
         log.info(f"✅ results.db 最新记录 {db_age:.1f} 分钟前（正常）")
 
-    # ── 检查 5：hotel_real_data.db（数据采集）更新时效 ────────────────────────
+    # ── 检查 4：hotel_real_data.db（数据采集）更新时效 ────────────────────────
     real_db_age = db_last_write_minutes(REAL_DB)
     if real_db_age is None:
         log.warning("⚠️ hotel_real_data.db 不存在，数据采集可能从未运行")
