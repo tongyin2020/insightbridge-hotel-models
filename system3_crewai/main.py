@@ -31,6 +31,7 @@ sys.path.insert(0, str(BASE_DIR))
 from dotenv import load_dotenv
 load_dotenv(BASE_DIR / ".env", override=True)   # override=True 确保.env优先于系统环境变量
 
+os.environ.setdefault("MARE_USE_ML", "1")
 os.environ.setdefault("MODEL_WEIGHTS_PATH",
                       str(MODEL_DIR / "system2_claude_simulation" / "data" / "model_weights.json"))
 sys.path.insert(0, str(MODEL_DIR / "system2_claude_simulation"))
@@ -133,7 +134,11 @@ except ImportError:
             ml_occupancy_delta=0.0, ml_state_version=0,
             ancillary_profile="unavailable", ancillary_ratio_used=0.0,
             ancillary_margin_used=0.0, ancillary_per_occ=0.0,
-            data_source="unavailable", search_steps=0
+            data_source="unavailable", search_steps=0,
+            maml_reserved=False, maml_layer4_enabled=False, maml_fast_adapt_used=False,
+            maml_market_tier="unknown", maml_feature_schema_version="v1.0",
+            maml_profile_name="unknown", maml_state_version=0,
+            maml_meta_hotel_id_hash=None, maml_readiness={}, ml_layer_active=False
         )
 
 try:
@@ -166,6 +171,8 @@ PID_FILE     = BASE_DIR / "crewai.pid"
 
 # ── 数据库初始化 ───────────────────────────────────────────────────────
 def init_db() -> sqlite3.Connection:
+    from maml_reserved import MAMLReadinessMonitor, ensure_reserved_schema
+
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript("""
@@ -232,6 +239,8 @@ def init_db() -> sqlite3.Connection:
             notes                TEXT
         );
     """)
+    ensure_reserved_schema(conn)
+    MAMLReadinessMonitor().seed_existing_hotels(ALL_HOTELS, source="system3_crewai")
     conn.commit()
     return conn
 
@@ -518,6 +527,16 @@ def main():
                     r["ancillary_ratio_used"] = er.ancillary_ratio_used
                     r["ancillary_margin_used"] = er.ancillary_margin_used
                     r["ancillary_per_occ"]   = er.ancillary_per_occ
+                    r["maml_reserved"]       = er.maml_reserved
+                    r["maml_layer4_enabled"] = er.maml_layer4_enabled
+                    r["maml_fast_adapt_used"] = er.maml_fast_adapt_used
+                    r["maml_market_tier"]    = er.maml_market_tier
+                    r["maml_feature_schema_version"] = er.maml_feature_schema_version
+                    r["maml_profile_name"]   = er.maml_profile_name
+                    r["maml_state_version"]  = er.maml_state_version
+                    r["maml_meta_hotel_id_hash"] = er.maml_meta_hotel_id_hash
+                    r["maml_readiness"]      = er.maml_readiness
+                    r["ml_layer_active"]     = er.ml_layer_active
                     r["optimization_objective"] = "light_trevpar"
                     # ── V6 RevPAR 真实弹性优化 ──────────────────────────────
                     if _V6_OK and r.get("recommended_price", 0) > 0:
@@ -555,7 +574,14 @@ def main():
                 rp = r.get("recommended_price", 0)
                 mare_prices.append(rp)
                 conn.execute(
-                    "INSERT INTO hourly_runs VALUES (NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    """
+                    INSERT INTO hourly_runs (
+                        run_at, sim_hour, hotel_id, hotel_name, model_type,
+                        season, input_json, output_json, rec_price, demand_state,
+                        confidence, exp_lift, anomaly, weather_c, is_holiday,
+                        is_weekend, meta_hotel_id_hash, meta_used_fast_adapt
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
                     (run_at, hour, hotel["hotel_id"], hotel["name"], "MARE_ALL_FC",
                      signal["season"],
                      json.dumps({"scenario": scenario.name,
@@ -582,11 +608,20 @@ def main():
                                  "ancillary_ratio_used": r.get("ancillary_ratio_used"),
                                  "ancillary_margin_used": r.get("ancillary_margin_used"),
                                  "ancillary_per_occ": r.get("ancillary_per_occ"),
+                                 "maml_reserved": r.get("maml_reserved"),
+                                 "maml_layer4_enabled": r.get("maml_layer4_enabled"),
+                                 "maml_fast_adapt_used": r.get("maml_fast_adapt_used"),
+                                 "maml_market_tier": r.get("maml_market_tier"),
+                                 "maml_feature_schema_version": r.get("maml_feature_schema_version"),
+                                 "maml_profile_name": r.get("maml_profile_name"),
+                                 "maml_state_version": r.get("maml_state_version"),
+                                 "maml_readiness": r.get("maml_readiness"),
                                  "expected_revenue_lift": r.get("expected_revenue_lift"),
                                  "expected_room_revenue_lift": r.get("expected_room_revenue_lift")}),
                      rp, r.get("demand_state"), r.get("confidence"),
                      r.get("expected_revenue_lift"), "; ".join(anom),
-                     weather_c, int(signal["is_holiday"]), int(signal["is_weekend"]))
+                     weather_c, int(signal["is_holiday"]), int(signal["is_weekend"]),
+                     r.get("maml_meta_hotel_id_hash"), int(bool(r.get("maml_fast_adapt_used"))))
                 )
                 hour_results.append(("MARE", rp, anom))
             except Exception as e:
@@ -613,7 +648,14 @@ def main():
                 cp = r.get("crm_adjusted_price", 0)
                 crm_scores.append(r.get("integration_score", 0))
                 conn.execute(
-                    "INSERT INTO hourly_runs VALUES (NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    """
+                    INSERT INTO hourly_runs (
+                        run_at, sim_hour, hotel_id, hotel_name, model_type,
+                        season, input_json, output_json, rec_price, demand_state,
+                        confidence, exp_lift, anomaly, weather_c, is_holiday,
+                        is_weekend, meta_hotel_id_hash, meta_used_fast_adapt
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
                     (run_at, hour, hotel["hotel_id"], hotel["name"], "DIRECTOR_CRM_ALL_FC",
                      signal["season"],
                      json.dumps({"scenario": scenario.name,
@@ -623,12 +665,12 @@ def main():
                                  "psrs_status": r.get("psrs_status"),
                                  "integration_score": r.get("integration_score"),
                                  "channel": r.get("channel")}),
-                     # 修正(2026-06-01): confidence列错误写入loyalty_tier，改为integration_score分级
                      cp, r.get("psrs_status"),
                      ("High"   if r.get("integration_score", 0) >= 0.60 else
                       "Medium" if r.get("integration_score", 0) >= 0.35 else "Low"),
                      str(r.get("upsell_revenue", 0)), "; ".join(anom),
-                     weather_c, int(signal["is_holiday"]), int(signal["is_weekend"]))
+                     weather_c, int(signal["is_holiday"]), int(signal["is_weekend"]),
+                     None, 0)
                 )
                 hour_results.append(("CRM", cp, anom))
             except Exception as e:
@@ -665,7 +707,14 @@ def main():
                 dp = r.get("direct_offer_price", 0)
                 if r.get("direct_wins_vs_ota"): acq_wins += 1
                 conn.execute(
-                    "INSERT INTO hourly_runs VALUES (NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    """
+                    INSERT INTO hourly_runs (
+                        run_at, sim_hour, hotel_id, hotel_name, model_type,
+                        season, input_json, output_json, rec_price, demand_state,
+                        confidence, exp_lift, anomaly, weather_c, is_holiday,
+                        is_weekend, meta_hotel_id_hash, meta_used_fast_adapt
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
                     (run_at, hour, hotel["hotel_id"], hotel["name"], "SELFACQ_ALL_FC",
                      signal["season"],
                      json.dumps({"scenario": scenario.name,
@@ -674,14 +723,14 @@ def main():
                      json.dumps({"direct_offer_price": dp,
                                  "ota_standard_price": r.get("ota_standard_price"),
                                  "direct_wins_vs_ota": r.get("direct_wins_vs_ota")}),
-                     # 修正(2026-06-01): confidence列错误写入loyalty_tier，改为直销胜出置信度
                      dp, "HIGH" if r.get("demand_high") else "NORMAL",
                      ("High"   if r.get("direct_wins_vs_ota") and
                                   r.get("direct_net_revenue", 0) > r.get("ota_net_revenue", 0) * 1.05
                       else "Medium" if r.get("direct_wins_vs_ota")
                       else "Low"),
                      r.get("revpar_lift_vs_market", "0%"), "; ".join(anom),
-                     weather_c, int(signal["is_holiday"]), int(signal["is_weekend"]))
+                     weather_c, int(signal["is_holiday"]), int(signal["is_weekend"]),
+                     None, 0)
                 )
                 hour_results.append(("ACQ", dp, anom))
             except Exception as e:

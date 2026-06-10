@@ -1,0 +1,17 @@
+pms:
+  api_base: "https://your-pms-api.example.com"
+  api_key: "TODO"
+  hotel_ids: []
+ota:
+  api_base: "https://your-ota-api.example.com"
+  api_key: "TODO"
+dsec:
+  source: "TODO"
+mha:
+  source: "TODO"
+weather:
+  api_key: "TODO"
+  location: "Macau"
+holiday_calendar:
+  calendar_path: "mare_etl/data/macau_calendar.json"
+

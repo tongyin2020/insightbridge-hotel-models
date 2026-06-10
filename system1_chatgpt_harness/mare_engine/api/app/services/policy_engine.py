@@ -298,7 +298,7 @@ class GMApprovalRule(PolicyRule):
 
 DEFAULT_RULES: list[PolicyRule] = [
     PriceFloorCeilingRule(),
-    CompetitorDeviationRule(),
+    # v3.2: competitor_deviation 保留为可选规则，不再默认参与 MARE 护栏。
     RateParityRule(),
     GuestSatisfactionRule(),
     DataFreshnessRule(),

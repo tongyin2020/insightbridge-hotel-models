@@ -64,6 +64,38 @@ except Exception:
     def _ml_choose_adjustments(*args, **kwargs):
         return None
 
+try:
+    from mare_ml_layer import MareMAMLAdapter as _MareMAMLAdapter
+    from maml_reserved import build_maml_metadata as _build_maml_metadata
+    _MAML_RESERVED_OK = True
+except Exception:
+    _MAML_RESERVED_OK = False
+    _MareMAMLAdapter = None
+    def _build_maml_metadata(**kwargs):
+        return {
+            "maml_reserved": False,
+            "maml_layer4_enabled": False,
+            "maml_fast_adapt_used": False,
+            "maml_market_tier": "unknown",
+            "maml_feature_schema_version": "v1.0",
+            "maml_profile_name": "unknown",
+            "maml_state_version": 0,
+            "maml_meta_hotel_id_hash": None,
+            "maml_readiness": {
+                "hotel_count": 0,
+                "market_tier_count": 0,
+                "new_hotels_30d": 0,
+                "activation_thresholds": {
+                    "hotel_count": 200,
+                    "market_tier_count": 3,
+                    "new_hotels_30d": 5,
+                },
+                "layer4_ready": False,
+                "layer4_enabled": False,
+            },
+            "ml_layer_active": False,
+        }
+
 # 按现有76酒店名单，对澳门5★综合度假村做显式识别。
 _INTEGRATED_RESORT_IDS = {
     "MAC_5DX_WYNN_002",  # 永利皇宫
@@ -136,6 +168,16 @@ class ElasticityResult(NamedTuple):
     ancillary_per_occ:    float   # 每卖出1间夜对应的非房贡献(MOP)
     data_source:          str     # "simulated" | "fitted_pms"
     search_steps:         int     # 枚举了多少个价格点
+    maml_reserved:        bool    # 是否已预留 Layer 4 MAML 接口
+    maml_layer4_enabled:  bool    # 当前是否启用 Layer 4（v3.2 固定 False）
+    maml_fast_adapt_used: bool    # 当前是否用了 fast_adapt（v3.2 固定 False）
+    maml_market_tier:     str     # 未来元学习所属市场段
+    maml_feature_schema_version: str  # 统一特征 schema 版本
+    maml_profile_name:    str     # 当前 MARE 画像名称
+    maml_state_version:   int     # MAML 预留层使用的状态版本
+    maml_meta_hotel_id_hash: str | None  # 未来跨酒店匿名标识
+    maml_readiness:       dict    # Layer 4 启用条件状态
+    ml_layer_active:      bool    # 当前在线自学习层是否生效
 
 
 class ElasticityEngine:
@@ -198,6 +240,15 @@ class ElasticityEngine:
             hotel_id=hotel_id,
             season=season,
             demand_level=demand_level,
+        )
+        maml_adapter = _MareMAMLAdapter(elasticity_profile) if _MareMAMLAdapter else None
+        maml_meta = _build_maml_metadata(
+            hotel_id=hotel_id,
+            star=star,
+            profile_name=elasticity_profile,
+            state_version=ml_state_version,
+            ml_enabled=ml_enabled,
+            model=maml_adapter if maml_adapter else type("FallbackModel", (), {"get_feature_schema": lambda self: {"version": "v1.0"}})(),
         )
         base_occ   = optimal_occupancy
         hotel_anchor = self._get_hotel_anchor(hotel_id)
@@ -272,6 +323,16 @@ class ElasticityEngine:
             ancillary_per_occ   = round(ancillary_per_occ, 1),
             data_source         = self._data_source,
             search_steps        = steps,
+            maml_reserved       = bool(maml_meta.get("maml_reserved")),
+            maml_layer4_enabled = bool(maml_meta.get("maml_layer4_enabled")),
+            maml_fast_adapt_used = bool(maml_meta.get("maml_fast_adapt_used")),
+            maml_market_tier    = str(maml_meta.get("maml_market_tier") or "unknown"),
+            maml_feature_schema_version = str(maml_meta.get("maml_feature_schema_version") or "v1.0"),
+            maml_profile_name   = str(maml_meta.get("maml_profile_name") or elasticity_profile),
+            maml_state_version  = int(maml_meta.get("maml_state_version") or ml_state_version),
+            maml_meta_hotel_id_hash = maml_meta.get("maml_meta_hotel_id_hash"),
+            maml_readiness      = dict(maml_meta.get("maml_readiness") or {}),
+            ml_layer_active     = bool(maml_meta.get("ml_layer_active")),
         )
 
     # ──────────────────────────────────────────────────────────────────────────

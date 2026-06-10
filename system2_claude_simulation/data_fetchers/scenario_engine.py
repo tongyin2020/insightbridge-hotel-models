@@ -15,6 +15,8 @@ scenario_engine.py — 酒店内部数据场景模拟器
 """
 
 from __future__ import annotations
+
+import os
 from dataclasses import dataclass, field
 
 
@@ -299,6 +301,13 @@ SCENARIOS: list[HotelScenario] = [
 
 NUM_SCENARIOS: int = len(SCENARIOS)
 SCENARIO_MAP: dict[str, HotelScenario] = {s.name: s for s in SCENARIOS}
+_DISABLE_EXTREME = os.getenv("DISABLE_EXTREME", "1").strip() not in ("0", "false", "False", "")
+_EXTREME_CATEGORIES = {"crisis", "stress", "market_shock"}
+_ACTIVE_SCENARIOS: list[HotelScenario] = [
+    s for s in SCENARIOS
+    if not _DISABLE_EXTREME or s.category not in _EXTREME_CATEGORIES
+]
+_ACTIVE_SCENARIO_COUNT: int = len(_ACTIVE_SCENARIOS)
 
 
 def get_scenario(hotel_index: int, sim_hour: int) -> HotelScenario:
@@ -313,7 +322,9 @@ def get_scenario(hotel_index: int, sim_hour: int) -> HotelScenario:
       - 21天内每家酒店遍历全部14个场景约108次（504小时×3步/14场景）
       - 场景内数字 × 3 确保连续小时不重复同一场景
     """
-    return SCENARIOS[(hotel_index + sim_hour * 3) % NUM_SCENARIOS]
+    scenarios = _ACTIVE_SCENARIOS or SCENARIOS
+    scenario_count = _ACTIVE_SCENARIO_COUNT or NUM_SCENARIOS
+    return scenarios[(hotel_index + sim_hour * 3) % scenario_count]
 
 
 def get_scenario_stats() -> str:
@@ -326,4 +337,9 @@ def get_scenario_stats() -> str:
                  "market_shock": "市场冲击", "stress": "系统压力"}
     for cat, names in cats.items():
         lines.append(f"  {cat_names.get(cat, cat)}: {', '.join(names)}")
+    lines.append(
+        f"  极端过滤: {'启用' if _DISABLE_EXTREME else '关闭'} "
+        f"(DISABLE_EXTREME={int(_DISABLE_EXTREME)})"
+    )
+    lines.append(f"  实际采样场景: {_ACTIVE_SCENARIO_COUNT or NUM_SCENARIOS} 个")
     return "\n".join(lines)

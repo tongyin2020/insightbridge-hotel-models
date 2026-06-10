@@ -33,6 +33,9 @@ from dotenv import load_dotenv
 load_dotenv(BASE_DIR / ".env", override=True)
 load_dotenv(SCRIPT_DIR / ".env", override=True)
 
+# Default MARE runtime to the trained ML path while preserving router fallback.
+os.environ.setdefault("MARE_USE_ML", "1")
+
 from hotel_roster_76 import ALL_HOTELS_76 as ALL_HOTELS
 from system2_claude_simulation.data_fetchers.real_data import get_all_real_signals
 from system2_claude_simulation.data_fetchers.scenario_engine import (  # noqa: E402
@@ -357,6 +360,11 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        from maml_reserved import MAMLReadinessMonitor
+        MAMLReadinessMonitor().seed_existing_hotels(ALL_HOTELS, source="system1_chatgpt_harness")
+    except Exception:
+        pass
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     jsonl_path = args.output_dir / f"run_{stamp}.jsonl"
     summary_path = args.output_dir / f"summary_{stamp}.json"

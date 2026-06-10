@@ -1,0 +1,18 @@
+{
+  "cycles_completed": 1,
+  "mare_runs": 836,
+  "director_runs": 836,
+  "selfacq_runs": 1064,
+  "mare_failures": 0,
+  "director_failures": 0,
+  "selfacq_failures": 0,
+  "issue_counts": {
+    "GUARDRAIL: 1项规则违反: ['price_floor_ceiling']": 521,
+    "WARN: CRM集成评分过低 0.23": 23,
+    "CRITICAL: PSRS系统同步失败—预订数据未入库": 63,
+    "WARN: CRM集成评分过低 0.05": 33,
+    "WARN: CRM集成评分过低 0.13": 70,
+    "WARN: WhatsApp发送失败—客户触达中断": 68,
+    "WARN: CRM集成评分过低 0.15": 13
+  }
+}

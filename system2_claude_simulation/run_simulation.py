@@ -34,6 +34,9 @@ import logging
 
 import requests
 
+DISABLE_EXTREME_SCENARIOS = os.getenv("DISABLE_EXTREME", "1").strip() not in ("0", "false", "False", "")
+os.environ.setdefault("MARE_USE_ML", "1")
+
 _MODEL_ROOT = Path(__file__).resolve().parent.parent
 if str(_MODEL_ROOT) not in sys.path:
     sys.path.insert(0, str(_MODEL_ROOT))
@@ -117,7 +120,11 @@ except ImportError:
             ml_occupancy_delta=0.0, ml_state_version=0,
             ancillary_profile="unavailable", ancillary_ratio_used=0.0,
             ancillary_margin_used=0.0, ancillary_per_occ=0.0,
-            data_source="unavailable", search_steps=0
+            data_source="unavailable", search_steps=0,
+            maml_reserved=False, maml_layer4_enabled=False, maml_fast_adapt_used=False,
+            maml_market_tier="unknown", maml_feature_schema_version="v1.0",
+            maml_profile_name="unknown", maml_state_version=0,
+            maml_meta_hotel_id_hash=None, maml_readiness={}, ml_layer_active=False
         )
 
 try:
@@ -776,6 +783,8 @@ MACAU_HOLIDAYS_2026 = {
 
 # ── 数据库初始化 ───────────────────────────────────────────────────────────────
 def init_db():
+    from maml_reserved import MAMLReadinessMonitor, ensure_reserved_schema
+
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.executescript("""
@@ -840,6 +849,8 @@ def init_db():
             notes TEXT
         );
     """)
+    ensure_reserved_schema(conn)
+    MAMLReadinessMonitor().seed_existing_hotels(ALL_HOTELS, source="system2_claude_simulation")
     conn.commit()
     return conn
 
@@ -1057,6 +1068,16 @@ def run_3star_test(hotel: dict, signal: dict, real_data: dict,
         result["ancillary_ratio_used"] = er.ancillary_ratio_used
         result["ancillary_margin_used"] = er.ancillary_margin_used
         result["ancillary_per_occ"]   = er.ancillary_per_occ
+        result["maml_reserved"]       = er.maml_reserved
+        result["maml_layer4_enabled"] = er.maml_layer4_enabled
+        result["maml_fast_adapt_used"] = er.maml_fast_adapt_used
+        result["maml_market_tier"]    = er.maml_market_tier
+        result["maml_feature_schema_version"] = er.maml_feature_schema_version
+        result["maml_profile_name"]   = er.maml_profile_name
+        result["maml_state_version"]  = er.maml_state_version
+        result["maml_meta_hotel_id_hash"] = er.maml_meta_hotel_id_hash
+        result["maml_readiness"]      = er.maml_readiness
+        result["ml_layer_active"]     = er.ml_layer_active
         result["optimization_objective"] = "light_trevpar"
         result["elasticity_source"]   = er.data_source
 
@@ -1542,6 +1563,8 @@ def write_daily_summary(conn: sqlite3.Connection, day: int):
             out = {}
         scenario_category = out.get("scenario_category", "normal")
         scenario_band = "extreme" if scenario_category in EXTREME_CATEGORIES else "normal"
+        if DISABLE_EXTREME_SCENARIOS and scenario_band == "extreme":
+            continue
         model_family = (
             "MARE" if "MARE" in model_type
             else "DIRECTOR" if "DIRECTOR" in model_type
@@ -1644,6 +1667,11 @@ def write_daily_summary(conn: sqlite3.Connection, day: int):
 # ── 主循环 ────────────────────────────────────────────────────────────────────
 def main():
     print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] 澳门酒店AI模型模拟测试启动")
+    if DISABLE_EXTREME_SCENARIOS:
+        print("  [v3.2] 极端场景过滤: 启用 (DISABLE_EXTREME=1)")
+        print(f"  [v3.2] 跳过类别: {sorted(EXTREME_CATEGORIES)}")
+    else:
+        print("  [v3.2] 极端场景过滤: 关闭 (DISABLE_EXTREME=0)")
     print(f"  目标：{TOTAL_HOURS}小时 ({TOTAL_HOURS // 24}天)")
     print(f"  3★酒店（澳门旅游局官方）：{len(HOTELS_3_STAR)}家 (每小时MARE+CRM各{len(HOTELS_3_STAR)}次)")
     print(f"  4-5★酒店（澳门旅游局官方）：{len(HOTELS_45_STAR)}家 (每小时自主获客{len(HOTELS_45_STAR)}次)")
@@ -1696,14 +1724,25 @@ def main():
 
         def _insert(model_type, hotel, out_json, rec_price, demand_state, conf, lift, anomalies):
             conn.execute(
-                "INSERT INTO hourly_runs VALUES (NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (run_at_str, hour, hotel["hotel_id"], hotel["name"], model_type,
-                 signal["season"],
-                 json.dumps({k: v for k, v in signal.items() if k != "weather_celsius"}),
-                 json.dumps(out_json),
-                 rec_price, demand_state, conf, lift,
-                 "; ".join(anomalies),
-                 weather_c, int(signal["is_holiday"]), int(signal["is_weekend"])),
+                """
+                INSERT INTO hourly_runs (
+                    run_at, sim_hour, hotel_id, hotel_name, model_type,
+                    season, input_json, output_json, rec_price, demand_state,
+                    confidence, exp_lift, anomaly, weather_celsius, is_holiday,
+                    is_weekend, meta_hotel_id_hash, meta_used_fast_adapt
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    run_at_str, hour, hotel["hotel_id"], hotel["name"], model_type,
+                    signal["season"],
+                    json.dumps({k: v for k, v in signal.items() if k != "weather_celsius"}),
+                    json.dumps(out_json),
+                    rec_price, demand_state, conf, lift,
+                    "; ".join(anomalies),
+                    weather_c, int(signal["is_holiday"]), int(signal["is_weekend"]),
+                    out_json.get("maml_meta_hotel_id_hash"),
+                    int(bool(out_json.get("maml_fast_adapt_used"))),
+                ),
             )
             if anomalies:
                 for a in anomalies:
@@ -1713,12 +1752,22 @@ def main():
         def _insert_err(model_type, hotel, exc):
             msg = f"EXCEPTION: {type(exc).__name__}: {exc}"
             conn.execute(
-                "INSERT INTO hourly_runs VALUES (NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (run_at_str, hour, hotel["hotel_id"], hotel["name"], model_type,
-                 signal["season"], "{}", "{}",
-                 None, "ERROR", "None", "N/A",
-                 msg,
-                 weather_c, int(signal["is_holiday"]), int(signal["is_weekend"])),
+                """
+                INSERT INTO hourly_runs (
+                    run_at, sim_hour, hotel_id, hotel_name, model_type,
+                    season, input_json, output_json, rec_price, demand_state,
+                    confidence, exp_lift, anomaly, weather_celsius, is_holiday,
+                    is_weekend, meta_hotel_id_hash, meta_used_fast_adapt
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    run_at_str, hour, hotel["hotel_id"], hotel["name"], model_type,
+                    signal["season"], "{}", "{}",
+                    None, "ERROR", "None", "N/A",
+                    msg,
+                    weather_c, int(signal["is_holiday"]), int(signal["is_weekend"]),
+                    None, 0,
+                ),
             )
             hour_results.append((model_type, hotel["hotel_id"], 0, [msg]))
 

@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from maml_compatible_model import MAMLCompatibleModel, MAMLParams
+
 STATE_PATH = Path(__file__).resolve().parent / "mare_ml_state.json"
 
 _PRIOR_ALPHA = 2.0
@@ -214,3 +216,35 @@ def get_profile_snapshot(profile_name: str) -> dict[str, Any]:
             ),
         }
     return summary
+
+
+class MareMAMLAdapter(MAMLCompatibleModel):
+    """Expose current MARE learning state through a future MAML-compatible API."""
+
+    def __init__(self, profile_name: str):
+        self.profile_name = profile_name
+
+    def get_params(self) -> MAMLParams:
+        state = _load_state()
+        profile = _ensure_profile(state, self.profile_name)
+        return MAMLParams(
+            param_dict={
+                "profile_name": self.profile_name,
+                "bandit": profile.get("bandit", {}),
+                "stats": profile.get("stats", {}),
+            },
+            feature_schema_version="v1.0",
+            market_tier="5_star" if "5star" in self.profile_name else "3to4_star",
+            n_training_samples=int(profile.get("stats", {}).get("decisions", 0)),
+        )
+
+    def set_params(self, params: MAMLParams) -> None:
+        state = _load_state()
+        profile_name = str(params.param_dict.get("profile_name") or self.profile_name)
+        profile = _ensure_profile(state, profile_name)
+        if "bandit" in params.param_dict:
+            profile["bandit"] = params.param_dict["bandit"]
+        if "stats" in params.param_dict:
+            profile["stats"] = params.param_dict["stats"]
+        self.profile_name = profile_name
+        _save_state(state)

@@ -2,7 +2,7 @@
   "meta": {
     "version": 1,
     "created_at": "2026-06-09T17:56:12.047858+00:00",
-    "updated_at": "2026-06-09T17:56:34.104923+00:00",
+    "updated_at": "2026-06-10T23:54:45.483898+00:00",
     "description": "MARE profile-level contextual bandit state"
   },
   "profiles": {
@@ -10,308 +10,308 @@
       "bandit": {
         "elasticity_multiplier": {
           "0.9000": {
-            "alpha": 13.0,
-            "beta": 44.0
+            "alpha": 178.0,
+            "beta": 1143.0
           },
           "0.9700": {
-            "alpha": 15.0,
-            "beta": 48.0
+            "alpha": 500.0,
+            "beta": 3045.0
           },
           "1.0000": {
-            "alpha": 3.0,
-            "beta": 21.0
+            "alpha": 53.0,
+            "beta": 376.0
           },
           "1.0300": {
-            "alpha": 17.0,
-            "beta": 52.0
+            "alpha": 188.0,
+            "beta": 1204.0
           },
           "1.1000": {
-            "alpha": 6.0,
-            "beta": 29.0
+            "alpha": 28.0,
+            "beta": 229.0
           }
         },
         "premium_delta": {
           "-0.0500": {
-            "alpha": 10.0,
-            "beta": 43.0
+            "alpha": 185.0,
+            "beta": 1159.0
           },
           "-0.0200": {
-            "alpha": 4.0,
-            "beta": 20.0
+            "alpha": 83.0,
+            "beta": 566.0
           },
           "0.0000": {
-            "alpha": 17.0,
-            "beta": 60.0
+            "alpha": 124.0,
+            "beta": 838.0
           },
           "0.0200": {
-            "alpha": 12.0,
-            "beta": 38.0
+            "alpha": 445.0,
+            "beta": 2706.0
           },
           "0.0500": {
-            "alpha": 11.0,
-            "beta": 33.0
+            "alpha": 110.0,
+            "beta": 728.0
           }
         },
         "occupancy_delta": {
           "-0.0400": {
-            "alpha": 39.0,
-            "beta": 97.0
+            "alpha": 926.0,
+            "beta": 5661.0
           },
           "-0.0200": {
-            "alpha": 9.0,
-            "beta": 43.0
+            "alpha": 15.0,
+            "beta": 166.0
           },
           "0.0000": {
             "alpha": 2.0,
-            "beta": 18.0
+            "beta": 56.0
           },
           "0.0200": {
             "alpha": 2.0,
-            "beta": 19.0
+            "beta": 58.0
           },
           "0.0400": {
             "alpha": 2.0,
-            "beta": 17.0
+            "beta": 56.0
           }
         }
       },
       "stats": {
-        "decisions": 228,
-        "successes": 44,
-        "failures": 184,
-        "last_success_at": "2026-06-09T17:56:33.793149+00:00",
-        "last_failure_at": "2026-06-09T17:56:33.797937+00:00"
+        "decisions": 6924,
+        "successes": 937,
+        "failures": 5987,
+        "last_success_at": "2026-06-10T23:54:40.464949+00:00",
+        "last_failure_at": "2026-06-10T23:54:40.484954+00:00"
       }
     },
     "5star_business_mice": {
       "bandit": {
         "elasticity_multiplier": {
           "0.9000": {
-            "alpha": 17.0,
-            "beta": 45.0
+            "alpha": 103.0,
+            "beta": 316.0
           },
           "0.9700": {
-            "alpha": 13.0,
-            "beta": 26.0
+            "alpha": 2052.0,
+            "beta": 5073.0
           },
           "1.0000": {
-            "alpha": 19.0,
-            "beta": 42.0
+            "alpha": 121.0,
+            "beta": 439.0
           },
           "1.0300": {
-            "alpha": 41.0,
-            "beta": 82.0
+            "alpha": 136.0,
+            "beta": 474.0
           },
           "1.1000": {
-            "alpha": 7.0,
-            "beta": 26.0
+            "alpha": 27.0,
+            "beta": 133.0
           }
         },
         "premium_delta": {
           "-0.0500": {
-            "alpha": 5.0,
-            "beta": 20.0
+            "alpha": 164.0,
+            "beta": 472.0
           },
           "-0.0200": {
-            "alpha": 3.0,
-            "beta": 11.0
+            "alpha": 57.0,
+            "beta": 192.0
           },
           "0.0000": {
-            "alpha": 39.0,
-            "beta": 69.0
+            "alpha": 163.0,
+            "beta": 552.0
           },
           "0.0200": {
-            "alpha": 15.0,
-            "beta": 45.0
+            "alpha": 1932.0,
+            "beta": 4772.0
           },
           "0.0500": {
-            "alpha": 35.0,
-            "beta": 76.0
+            "alpha": 123.0,
+            "beta": 447.0
           }
         },
         "occupancy_delta": {
           "-0.0400": {
-            "alpha": 7.0,
-            "beta": 27.0
+            "alpha": 2107.0,
+            "beta": 5231.0
           },
           "-0.0200": {
-            "alpha": 64.0,
-            "beta": 111.0
+            "alpha": 270.0,
+            "beta": 886.0
           },
           "0.0000": {
-            "alpha": 16.0,
-            "beta": 46.0
+            "alpha": 42.0,
+            "beta": 183.0
           },
           "0.0200": {
-            "alpha": 6.0,
-            "beta": 20.0
+            "alpha": 16.0,
+            "beta": 92.0
           },
           "0.0400": {
             "alpha": 4.0,
-            "beta": 17.0
+            "beta": 43.0
           }
         }
       },
       "stats": {
-        "decisions": 298,
-        "successes": 87,
-        "failures": 211,
-        "last_success_at": "2026-06-09T17:56:34.005060+00:00",
-        "last_failure_at": "2026-06-09T17:56:33.994702+00:00"
+        "decisions": 8854,
+        "successes": 2429,
+        "failures": 6425,
+        "last_success_at": "2026-06-10T23:54:43.953672+00:00",
+        "last_failure_at": "2026-06-10T23:54:43.947506+00:00"
       }
     },
     "5star_resort_leisure_shoulder": {
       "bandit": {
         "elasticity_multiplier": {
           "0.9000": {
-            "alpha": 15.0,
-            "beta": 37.0
+            "alpha": 315.0,
+            "beta": 1197.0
           },
           "0.9700": {
-            "alpha": 6.0,
-            "beta": 26.0
+            "alpha": 35.0,
+            "beta": 159.0
           },
           "1.0000": {
-            "alpha": 31.0,
-            "beta": 71.0
+            "alpha": 536.0,
+            "beta": 2037.0
           },
           "1.0300": {
-            "alpha": 5.0,
-            "beta": 24.0
+            "alpha": 49.0,
+            "beta": 212.0
           },
           "1.1000": {
-            "alpha": 6.0,
-            "beta": 19.0
+            "alpha": 445.0,
+            "beta": 1579.0
           }
         },
         "premium_delta": {
           "-0.0500": {
-            "alpha": 4.0,
-            "beta": 15.0
+            "alpha": 18.0,
+            "beta": 107.0
           },
           "-0.0200": {
-            "alpha": 3.0,
-            "beta": 16.0
+            "alpha": 55.0,
+            "beta": 244.0
           },
           "0.0000": {
-            "alpha": 26.0,
-            "beta": 62.0
+            "alpha": 170.0,
+            "beta": 728.0
           },
           "0.0200": {
-            "alpha": 11.0,
-            "beta": 31.0
+            "alpha": 102.0,
+            "beta": 452.0
           },
           "0.0500": {
-            "alpha": 19.0,
-            "beta": 53.0
+            "alpha": 1035.0,
+            "beta": 3653.0
           }
         },
         "occupancy_delta": {
           "-0.0400": {
-            "alpha": 14.0,
-            "beta": 32.0
+            "alpha": 1296.0,
+            "beta": 4656.0
           },
           "-0.0200": {
-            "alpha": 31.0,
-            "beta": 68.0
+            "alpha": 64.0,
+            "beta": 326.0
           },
           "0.0000": {
-            "alpha": 6.0,
-            "beta": 21.0
+            "alpha": 7.0,
+            "beta": 70.0
           },
           "0.0200": {
-            "alpha": 7.0,
-            "beta": 32.0
+            "alpha": 8.0,
+            "beta": 75.0
           },
           "0.0400": {
             "alpha": 5.0,
-            "beta": 24.0
+            "beta": 57.0
           }
         }
       },
       "stats": {
-        "decisions": 220,
-        "successes": 53,
-        "failures": 167,
-        "last_success_at": "2026-06-09T17:56:34.010146+00:00",
-        "last_failure_at": "2026-06-09T17:56:33.967124+00:00"
+        "decisions": 6544,
+        "successes": 1370,
+        "failures": 5174,
+        "last_success_at": "2026-06-10T23:54:44.035330+00:00",
+        "last_failure_at": "2026-06-10T23:54:44.029038+00:00"
       }
     },
     "4star_leisure_shoulder": {
       "bandit": {
         "elasticity_multiplier": {
           "0.9000": {
-            "alpha": 17.0,
-            "beta": 45.0
+            "alpha": 276.0,
+            "beta": 987.0
           },
           "0.9700": {
-            "alpha": 24.0,
-            "beta": 55.0
+            "alpha": 518.0,
+            "beta": 1621.0
           },
           "1.0000": {
-            "alpha": 11.0,
-            "beta": 35.0
+            "alpha": 223.0,
+            "beta": 762.0
           },
           "1.0300": {
-            "alpha": 9.0,
-            "beta": 32.0
+            "alpha": 564.0,
+            "beta": 1854.0
           },
           "1.1000": {
-            "alpha": 3.0,
-            "beta": 22.0
+            "alpha": 29.0,
+            "beta": 115.0
           }
         },
         "premium_delta": {
           "-0.0500": {
-            "alpha": 9.0,
-            "beta": 35.0
+            "alpha": 621.0,
+            "beta": 2049.0
           },
           "-0.0200": {
-            "alpha": 16.0,
-            "beta": 44.0
+            "alpha": 227.0,
+            "beta": 780.0
           },
           "0.0000": {
-            "alpha": 9.0,
-            "beta": 30.0
+            "alpha": 217.0,
+            "beta": 645.0
           },
           "0.0200": {
-            "alpha": 13.0,
-            "beta": 39.0
+            "alpha": 92.0,
+            "beta": 381.0
           },
           "0.0500": {
-            "alpha": 17.0,
-            "beta": 41.0
+            "alpha": 453.0,
+            "beta": 1484.0
           }
         },
         "occupancy_delta": {
           "-0.0400": {
-            "alpha": 25.0,
-            "beta": 59.0
+            "alpha": 1542.0,
+            "beta": 4925.0
           },
           "-0.0200": {
-            "alpha": 28.0,
-            "beta": 71.0
+            "alpha": 47.0,
+            "beta": 225.0
           },
           "0.0000": {
-            "alpha": 7.0,
-            "beta": 29.0
+            "alpha": 12.0,
+            "beta": 84.0
           },
           "0.0200": {
-            "alpha": 2.0,
-            "beta": 15.0
+            "alpha": 3.0,
+            "beta": 43.0
           },
           "0.0400": {
-            "alpha": 2.0,
-            "beta": 15.0
+            "alpha": 6.0,
+            "beta": 62.0
           }
         }
       },
       "stats": {
-        "decisions": 233,
-        "successes": 54,
-        "failures": 179,
-        "last_success_at": "2026-06-09T17:56:34.094790+00:00",
-        "last_failure_at": "2026-06-09T17:56:34.104645+00:00"
+        "decisions": 6929,
+        "successes": 1600,
+        "failures": 5329,
+        "last_success_at": "2026-06-10T23:54:45.476665+00:00",
+        "last_failure_at": "2026-06-10T23:54:45.483671+00:00"
       }
     }
   }

@@ -1,0 +1,102 @@
+{
+  "version": 3,
+  "trained_at": "2026-06-10T21:58:07.313732+00:00",
+  "feature_names": [
+    "hour",
+    "day_of_week",
+    "day_of_month",
+    "month",
+    "is_weekend",
+    "is_holiday",
+    "days_to_holiday",
+    "season_ord",
+    "peak_period_flag",
+    "super_peak_flag",
+    "hotel_star",
+    "hotel_id_te",
+    "dsec_market_occ",
+    "mha_market_occ",
+    "blended_market_demand_signal",
+    "occ_lag_24h",
+    "occ_lag_72h",
+    "occ_lag_7d",
+    "occ_rolling_7d_mean",
+    "occ_rolling_30d_mean",
+    "base_price",
+    "competitor_price",
+    "price_ratio",
+    "base_price_lag_24h",
+    "border_flow",
+    "flight_ferry",
+    "visitors_stats",
+    "zhuhai_saturation",
+    "event_ticket_sales",
+    "event_density",
+    "days_to_next_event",
+    "weather_score",
+    "temperature",
+    "rain_prob",
+    "ota_booking_pace",
+    "holiday"
+  ],
+  "n_features": 36,
+  "metrics": {
+    "cv_mae_mean": 0.03378720207481968,
+    "cv_rmse_mean": 0.054421516226076196,
+    "cv_r2_mean": 0.7937137793218259,
+    "cv_folds": [
+      {
+        "fold": 0,
+        "mae": 0.04953216279904442,
+        "rmse": 0.07791564449817953,
+        "r2": 0.7352381660805509,
+        "best_iter": 165
+      },
+      {
+        "fold": 1,
+        "mae": 0.010542546920623777,
+        "rmse": 0.04190150832683548,
+        "r2": 0.6858527313266346,
+        "best_iter": 240
+      },
+      {
+        "fold": 2,
+        "mae": 0.0012948772246205468,
+        "rmse": 0.0036346473116956064,
+        "r2": 0.9956453887615463,
+        "best_iter": 218
+      },
+      {
+        "fold": 3,
+        "mae": 0.05529962998159788,
+        "rmse": 0.08409791196151657,
+        "r2": 0.7806047496644353,
+        "best_iter": 120
+      },
+      {
+        "fold": 4,
+        "mae": 0.052266793448211786,
+        "rmse": 0.06455786903215378,
+        "r2": 0.7712278607759624,
+        "best_iter": 25
+      }
+    ],
+    "n_train_samples": 384578,
+    "n_features": 36,
+    "final_n_iter": 200
+  },
+  "params": {
+    "objective": "regression",
+    "metric": "mae",
+    "boosting_type": "gbdt",
+    "num_leaves": 63,
+    "learning_rate": 0.05,
+    "feature_fraction": 0.9,
+    "bagging_fraction": 0.9,
+    "bagging_freq": 5,
+    "min_child_samples": 20,
+    "lambda_l2": 0.1,
+    "verbose": -1,
+    "n_jobs": -1
+  }
+}

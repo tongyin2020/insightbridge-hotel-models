@@ -11,10 +11,20 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
+import random
+import sys
 from math import floor
 from pathlib import Path
 from typing import Any, Optional
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[5]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+_V32_LOGGER = logging.getLogger("mare.pricing_engine.v32")
+_V32_ML_FALLBACK_COUNTER = 0
 
 DEFAULT_WEIGHTS = {
     "season_multipliers": {
@@ -119,6 +129,64 @@ def demand_score(data):
         }
     )
     return round(anchored_score, 4), contributions
+
+
+def _v32_get_inference():
+    global _v32_inference_singleton
+    if "_v32_inference_singleton" not in globals():
+        from app.services.ml_inference_service import MAREDemandInference
+        _v32_inference_singleton = MAREDemandInference.singleton()
+    return _v32_inference_singleton
+
+
+def demand_score_ml(data):
+    from app.services.feature_extractor import enrich_request_with_lags
+
+    infer = _v32_get_inference()
+    enriched = enrich_request_with_lags(data)
+    return infer.predict(enriched)
+
+
+def demand_score_router(data):
+    global _V32_ML_FALLBACK_COUNTER
+
+    if os.getenv("MARE_USE_ML", "0") != "1":
+        score, breakdown = demand_score(data)
+        breakdown.append({"name": "_v32_path", "raw_value": 0, "value_used": 0, "contribution": 0.0, "meta": "rule"})
+        return score, breakdown
+
+    try:
+        ratio = float(os.getenv("MARE_USE_ML_RATIO", "1.0"))
+    except Exception:
+        ratio = 1.0
+
+    if ratio < 1.0 and random.random() > ratio:
+        score, breakdown = demand_score(data)
+        breakdown.append({"name": "_v32_path", "raw_value": ratio, "value_used": ratio, "contribution": 0.0, "meta": "rule_by_ratio"})
+        return score, breakdown
+
+    try:
+        score, breakdown = demand_score_ml(data)
+        breakdown.append({"name": "_v32_path", "raw_value": 1, "value_used": 1, "contribution": 0.0, "meta": "lightgbm"})
+        return score, breakdown
+    except Exception as exc:
+        _V32_ML_FALLBACK_COUNTER += 1
+        _V32_LOGGER.warning(
+            "[v3.2] ML path failed, fallback to rule path (count=%s): %s",
+            _V32_ML_FALLBACK_COUNTER,
+            exc,
+        )
+        score, breakdown = demand_score(data)
+        breakdown.append(
+            {
+                "name": "_v32_path",
+                "raw_value": _V32_ML_FALLBACK_COUNTER,
+                "value_used": _V32_ML_FALLBACK_COUNTER,
+                "contribution": 0.0,
+                "meta": f"rule_fallback:{str(exc)[:160]}",
+            }
+        )
+        return score, breakdown
 
 
 def demand_state(score):
@@ -343,6 +411,15 @@ def confidence(score, occupancy):
     return "Low"
 
 
+def _present_breakdown(breakdown: list[dict]) -> list[dict]:
+    visible = list(breakdown[:8])
+    if breakdown:
+        tail = breakdown[-1]
+        if tail.get("name") == "_v32_path" and all(item.get("name") != "_v32_path" for item in visible):
+            visible.append(tail)
+    return visible
+
+
 def _weights_hash() -> str:
     raw = json.dumps(load_weights(), sort_keys=True)
     return hashlib.sha256(raw.encode()).hexdigest()[:12]
@@ -359,7 +436,7 @@ def recommend(data, hotel_settings=None):
 
     seasonal_base = data.base_price * weights["season_multipliers"].get(data.season, 1.0)
 
-    score, breakdown = demand_score(data)
+    score, breakdown = demand_score_router(data)
     state = demand_state(score)
     d_adj = demand_adjustment(score)
     reasons_list.append({"title": "Demand Engine", "detail": f"Demand state {state} with score {score:.2f}."})
@@ -514,6 +591,8 @@ def recommend(data, hotel_settings=None):
     except Exception:
         pass
 
+    visible_breakdown = _present_breakdown(breakdown)
+
     recommendation_log = {
         "hotel_id": data.hotel_id,
         "market_segment": "macau_3star_plus",
@@ -535,7 +614,7 @@ def recommend(data, hotel_settings=None):
         "shadow_price": shadow_price,
         "model_weights_hash": _weights_hash(),
         "guardrail_violations": violation_names,
-        "factor_breakdown": breakdown[:8],
+        "factor_breakdown": visible_breakdown,
     }
 
     # ── HROS V5 字段追加 ─────────────────────────────────────────────
@@ -564,7 +643,7 @@ def recommend(data, hotel_settings=None):
         "fairness_report": fairness_report,
         "bundle_offers": bundle_offers,
         "reasons": reasons_list,
-        "factor_breakdown": breakdown[:8],
+        "factor_breakdown": visible_breakdown,
     }
     return result_dict
 

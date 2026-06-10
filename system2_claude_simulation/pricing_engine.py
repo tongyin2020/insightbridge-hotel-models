@@ -11,10 +11,20 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
+import random
+import sys
 from math import floor
 from pathlib import Path
 from typing import Any, Optional
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+_V32_LOGGER = logging.getLogger("mare.pricing_engine.v32")
+_V32_ML_FALLBACK_COUNTER = 0
 
 DEFAULT_WEIGHTS = {
     "season_multipliers": {
@@ -119,6 +129,107 @@ def demand_score(data):
         }
     )
     return round(anchored_score, 4), contributions
+
+
+def _v32_get_inference():
+    global _v32_inference_singleton
+    if "_v32_inference_singleton" not in globals():
+        from mare_ml.model_inference import MAREDemandInference
+        _v32_inference_singleton = MAREDemandInference.singleton()
+    return _v32_inference_singleton
+
+
+def _enrich_request_with_lags(request: Any) -> dict:
+    from pathlib import Path as _Path
+    import sqlite3 as _sqlite3
+
+    def _to_dict(obj: Any) -> dict:
+        if isinstance(obj, dict):
+            return dict(obj)
+        return {k: getattr(obj, k) for k in dir(obj) if not k.startswith("_")}
+
+    base = _to_dict(request)
+    feature_store = _Path(os.getenv("MARE_FEATURE_STORE", str(_PROJECT_ROOT / "mare_etl" / "feature_store.db")))
+    hotel_id = base.get("hotel_id")
+    if not hotel_id or not feature_store.exists():
+        return base
+    try:
+        conn = _sqlite3.connect(feature_store)
+        try:
+            rows = conn.execute(
+                """
+                SELECT actual_occupancy
+                FROM daily_features
+                WHERE hotel_id = ?
+                  AND actual_occupancy IS NOT NULL
+                  AND feature_date >= date('now', '-30 day')
+                ORDER BY feature_date DESC, hour DESC
+                LIMIT 720
+                """,
+                (hotel_id,),
+            ).fetchall()
+        finally:
+            conn.close()
+        occs = [r[0] for r in rows if r[0] is not None]
+        if occs:
+            base.setdefault("occ_lag_24h", occs[min(23, len(occs) - 1)])
+            if len(occs) >= 72:
+                base.setdefault("occ_lag_72h", occs[71])
+            if len(occs) >= 24 * 7:
+                base.setdefault("occ_lag_7d", occs[24 * 7 - 1])
+                base.setdefault("occ_rolling_7d_mean", sum(occs[:24 * 7]) / (24 * 7))
+            if len(occs) >= 24 * 30:
+                base.setdefault("occ_rolling_30d_mean", sum(occs[:24 * 30]) / (24 * 30))
+    except Exception:
+        pass
+    return base
+
+
+def demand_score_ml(data):
+    infer = _v32_get_inference()
+    return infer.predict(_enrich_request_with_lags(data))
+
+
+def demand_score_router(data):
+    global _V32_ML_FALLBACK_COUNTER
+
+    if os.getenv("MARE_USE_ML", "0") != "1":
+        score, breakdown = demand_score(data)
+        breakdown.append({"name": "_v32_path", "raw_value": 0, "value_used": 0, "contribution": 0.0, "meta": "rule"})
+        return score, breakdown
+
+    try:
+        ratio = float(os.getenv("MARE_USE_ML_RATIO", "1.0"))
+    except Exception:
+        ratio = 1.0
+
+    if ratio < 1.0 and random.random() > ratio:
+        score, breakdown = demand_score(data)
+        breakdown.append({"name": "_v32_path", "raw_value": ratio, "value_used": ratio, "contribution": 0.0, "meta": "rule_by_ratio"})
+        return score, breakdown
+
+    try:
+        score, breakdown = demand_score_ml(data)
+        breakdown.append({"name": "_v32_path", "raw_value": 1, "value_used": 1, "contribution": 0.0, "meta": "lightgbm"})
+        return score, breakdown
+    except Exception as exc:
+        _V32_ML_FALLBACK_COUNTER += 1
+        _V32_LOGGER.warning(
+            "[v3.2] ML path failed, fallback to rule path (count=%s): %s",
+            _V32_ML_FALLBACK_COUNTER,
+            exc,
+        )
+        score, breakdown = demand_score(data)
+        breakdown.append(
+            {
+                "name": "_v32_path",
+                "raw_value": _V32_ML_FALLBACK_COUNTER,
+                "value_used": _V32_ML_FALLBACK_COUNTER,
+                "contribution": 0.0,
+                "meta": f"rule_fallback:{str(exc)[:160]}",
+            }
+        )
+        return score, breakdown
 
 
 def demand_state(score):
@@ -348,6 +459,15 @@ def confidence(score, occupancy):
     return "Low"
 
 
+def _present_breakdown(breakdown: list[dict]) -> list[dict]:
+    visible = list(breakdown[:8])
+    if breakdown:
+        tail = breakdown[-1]
+        if tail.get("name") == "_v32_path" and all(item.get("name") != "_v32_path" for item in visible):
+            visible.append(tail)
+    return visible
+
+
 def _weights_hash() -> str:
     raw = json.dumps(load_weights(), sort_keys=True)
     return hashlib.sha256(raw.encode()).hexdigest()[:12]
@@ -364,7 +484,7 @@ def recommend(data, hotel_settings=None):
 
     seasonal_base = data.base_price * weights["season_multipliers"].get(data.season, 1.0)
 
-    score, breakdown = demand_score(data)
+    score, breakdown = demand_score_router(data)
     state = demand_state(score)
     d_adj = demand_adjustment(score)
     reasons_list.append({"title": "Demand Engine", "detail": f"Demand state {state} with score {score:.2f}."})
@@ -512,6 +632,8 @@ def recommend(data, hotel_settings=None):
     except Exception:
         pass
 
+    visible_breakdown = _present_breakdown(breakdown)
+
     recommendation_log = {
         "hotel_id": data.hotel_id,
         "market_segment": "macau_3star_plus",
@@ -533,7 +655,7 @@ def recommend(data, hotel_settings=None):
         "shadow_price": shadow_price,
         "model_weights_hash": _weights_hash(),
         "guardrail_violations": violation_names,
-        "factor_breakdown": breakdown[:8],
+        "factor_breakdown": visible_breakdown,
     }
 
     return {
@@ -561,7 +683,7 @@ def recommend(data, hotel_settings=None):
         "fairness_report": fairness_report,
         "bundle_offers": bundle_offers,
         "reasons": reasons_list,
-        "factor_breakdown": breakdown[:8],
+        "factor_breakdown": visible_breakdown,
     }
 
 
