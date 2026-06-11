@@ -35,6 +35,11 @@ db_archives/
 *.tmp
 *.bak
 agentops.log
+Library/
+audit_file_pack_*/
+reports/crewai_code_audit_*.md
+reports/model_math_audit_*.md
+reports/九模型运行分析报告_*.md
 
 # ── 敏感配置 ──
 service_account.json
