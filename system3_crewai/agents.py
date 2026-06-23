@@ -8,8 +8,8 @@ agents.py — 全球机会情报系统 Agent 定义
   GlobalProjectAgent     Perplexity       搜索全球旅游开发项目、基建招标
   HospitalityOpsAgent    Perplexity       酒店行业机会、管理合同、咨询RFP
   EventsTrackerAgent     GPT-4o           展览会、研讨会、投资论坛、峰会
-  PolitEconAgent         Claude Sonnet    政治经济背景、政策、市场趋势分析
-  ReportWriterAgent      Claude Sonnet    汇总所有信息，生成中英双语日报
+  PolitEconAgent         Perplexity       政治经济背景、政策、市场趋势分析
+  ReportWriterAgent      Perplexity       汇总所有信息，生成中英双语日报
 """
 
 from crewai import Agent, LLM
@@ -85,19 +85,35 @@ def _is_valid(key: str) -> bool:
 
 def _make_llm(model: str, key_env: str,
               fallback_model: str = "gpt-4o-mini",
-              fallback_env: str = "OPENAI_API_KEY") -> LLM | None:
+              fallback_env: str = "OPENAI_API_KEY",
+              base_url: str | None = None,
+              fallback_base_url: str | None = None) -> LLM | None:
     key = os.getenv(key_env, "")
     if _is_valid(key):
         try:
-            return LLM(model=model, api_key=key, temperature=0.2,
-                       max_completion_tokens=3000)
+            kwargs = dict(
+                model=model,
+                api_key=key,
+                temperature=0.2,
+                max_completion_tokens=3000,
+            )
+            if base_url:
+                kwargs["base_url"] = base_url
+            return LLM(**kwargs)
         except Exception as e:
             print(f"  [LLM] {model} 失败: {e}")
     fb = os.getenv(fallback_env, "")
     if _is_valid(fb):
         try:
-            return LLM(model=fallback_model, api_key=fb, temperature=0.2,
-                       max_completion_tokens=3000)
+            kwargs = dict(
+                model=fallback_model,
+                api_key=fb,
+                temperature=0.2,
+                max_completion_tokens=3000,
+            )
+            if fallback_base_url:
+                kwargs["base_url"] = fallback_base_url
+            return LLM(**kwargs)
         except Exception:
             pass
     return None
@@ -149,11 +165,22 @@ def build_agents() -> dict:
     bond_tools      = [t for t in [bond_yc_tool, bond_signal_tool, bond_risk_tool] if t]
     fx_tools        = [t for t in [fx_signal_tool, fx_risk_tool, fx_trade_tool] if t]
 
-    # LLM 优先级：Claude（已验证有效）→ DeepSeek（便宜高效）→ GPT-4o（备用）
-    llm_claude   = _make_llm("claude-sonnet-4-5", "ANTHROPIC_API_KEY",
-                              "deepseek/deepseek-chat", "DEEPSEEK_API_KEY")
-    llm_deepseek = _make_llm("deepseek/deepseek-chat", "DEEPSEEK_API_KEY",
-                              "claude-sonnet-4-5", "ANTHROPIC_API_KEY")
+    # LLM 优先级：Perplexity（主）→ DeepSeek（备用）→ GPT-4o（最终备用）
+    llm_primary  = _make_llm(
+        "perplexity/sonar-pro",
+        "PERPLEXITY_API_KEY",
+        "deepseek/deepseek-chat",
+        "DEEPSEEK_API_KEY",
+        base_url="https://api.perplexity.ai",
+    )
+    llm_deepseek = _make_llm(
+        "deepseek/deepseek-chat",
+        "DEEPSEEK_API_KEY",
+        "gpt-4o-mini",
+        "OPENAI_API_KEY",
+    )
+    if llm_primary is None:
+        llm_primary = llm_deepseek
 
     def _kw(llm):
         return {"llm": llm} if llm else {}
@@ -174,7 +201,7 @@ def build_agents() -> dict:
         tools=[search_tool, scrape_tool],
         verbose=True,
         allow_delegation=False,
-        **_kw(llm_claude),
+        **_kw(llm_primary),
     )
 
     # ── Agent 2：酒店及咨询行业机会（Claude + Firecrawl）────────────
@@ -194,7 +221,7 @@ def build_agents() -> dict:
         tools=[search_tool, scrape_tool],
         verbose=True,
         allow_delegation=False,
-        **_kw(llm_claude),
+        **_kw(llm_primary),
     )
 
     # ── Agent 3：活动与展会追踪（Claude）────────────────────────────
@@ -217,7 +244,7 @@ def build_agents() -> dict:
         tools=[search_tool] + extra_tools,
         verbose=True,
         allow_delegation=False,
-        **_kw(llm_claude),
+        **_kw(llm_primary),
     )
 
     # ── Agent 4：政治经济背景分析（Claude Sonnet）───────────────────
@@ -241,7 +268,7 @@ def build_agents() -> dict:
         tools=[search_tool],
         verbose=False,
         allow_delegation=False,
-        **_kw(llm_claude),
+        **_kw(llm_primary),
     )
 
     # ── Agent 5：日报撰写（Claude Sonnet）───────────────────────────
@@ -262,7 +289,7 @@ def build_agents() -> dict:
         tools=[],
         verbose=True,
         allow_delegation=False,
-        **_kw(llm_claude),
+        **_kw(llm_primary),
     )
 
     # ── Agent 6：加密货币量化交易（Claude Sonnet + Crypto Tools）───
@@ -290,7 +317,7 @@ def build_agents() -> dict:
         tools=crypto_tools,
         verbose=True,
         allow_delegation=False,
-        **_kw(llm_claude),
+        **_kw(llm_primary),
     ) if crypto_tools else None
 
     # ── Agent 7：股指期货量化交易（Claude Sonnet + StockIndex Tools）──
@@ -324,7 +351,7 @@ def build_agents() -> dict:
         tools=si_tools,
         verbose=True,
         allow_delegation=False,
-        **_kw(llm_claude),
+        **_kw(llm_primary),
     ) if si_tools else None
 
     # ── Agent 8：国债 / 利率期货量化交易（Claude Sonnet + Bond Tools）──
@@ -362,7 +389,7 @@ def build_agents() -> dict:
         tools=bond_tools,
         verbose=True,
         allow_delegation=False,
-        **_kw(llm_claude),
+        **_kw(llm_primary),
     ) if bond_tools else None
 
     # ── Agent 9：外汇量化交易（Claude Sonnet + FX Tools）────────────
@@ -403,7 +430,7 @@ def build_agents() -> dict:
         tools=fx_tools,
         verbose=True,
         allow_delegation=False,
-        **_kw(llm_claude),
+        **_kw(llm_primary),
     ) if fx_tools else None
 
     # 打印配置
