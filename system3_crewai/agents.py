@@ -445,6 +445,11 @@ def build_agents() -> dict:
         "events_tracker":   events_tracker_agent,
         "polit_econ":       polit_econ_agent,
         "report_writer":    report_writer_agent,
+        "data_harvester":   global_project_agent,
+        "mare":             hospitality_ops_agent,
+        "crm":              hospitality_ops_agent,
+        "selfacq":          hospitality_ops_agent,
+        "analyst":          report_writer_agent,
     }
     if crypto_trading_agent:
         result["crypto_trading"] = crypto_trading_agent

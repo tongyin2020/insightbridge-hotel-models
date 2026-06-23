@@ -27,12 +27,14 @@ import json
 import os
 import re
 import sqlite3
+import socket
 import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 import logging
+from urllib.parse import urlparse
 
 import requests
 from dotenv import load_dotenv
@@ -67,6 +69,27 @@ def _shifter_proxy_cfg() -> dict | None:
         }
     return None
 CACHE_TTL_SECONDS = 7200  # 2小时缓存
+_DNS_CACHE: dict[str, bool] = {}
+
+
+def _host_resolves(host: str) -> bool:
+    if not host:
+        return False
+    if host in _DNS_CACHE:
+        return _DNS_CACHE[host]
+    try:
+        socket.getaddrinfo(host, 443)
+        _DNS_CACHE[host] = True
+    except Exception:
+        _DNS_CACHE[host] = False
+    return _DNS_CACHE[host]
+
+
+def _url_host_resolves(url: str) -> bool:
+    try:
+        return _host_resolves(urlparse(url).hostname or "")
+    except Exception:
+        return False
 
 
 # ── 缓存层 ──────────────────────────────────────────────────────────────────
@@ -100,33 +123,80 @@ def _set_cache(key: str, value: dict):
         pass
 
 
+def _get_cache_any_age(key: str) -> Optional[dict]:
+    """读取最近一次缓存，不校验 TTL。"""
+    try:
+        conn = sqlite3.connect(CACHE_DB)
+        row = conn.execute(
+            "SELECT value FROM cache WHERE key=?", (key,)
+        ).fetchone()
+        conn.close()
+        if row and row[0]:
+            return json.loads(row[0])
+    except Exception:
+        pass
+    return None
+
+
 # ── 天气（Open-Meteo，稳定API）───────────────────────────────────────────────
 def fetch_weather() -> float:
-    """返回澳门当前气温（摄氏度），失败返回25.0"""
+    """返回澳门当前气温（摄氏度），失败时降级到旧缓存或默认值。"""
     cached = _get_cache("weather_macau")
     if cached:
         return cached["celsius"]
-    try:
-        r = requests.get(
-            "https://api.open-meteo.com/v1/forecast",
-            params={
-                "latitude": 22.1987,
-                "longitude": 113.5439,
-                "current": "temperature_2m",
-                "timezone": "Asia/Macau",
-            },
-            timeout=8,
-            headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"},
-        )
-        if r.status_code == 200:
-            payload = r.json()
-            current = payload.get("current") or {}
-            celsius = float(current["temperature_2m"])
-            _set_cache("weather_macau", {"celsius": celsius})
-            return celsius
-    except Exception as e:
-        logger.warning(f"Weather fetch failed: {e}")
-        return 25.0
+    errors = []
+
+    if _host_resolves("api.open-meteo.com"):
+        try:
+            r = requests.get(
+                "https://api.open-meteo.com/v1/forecast",
+                params={
+                    "latitude": 22.1987,
+                    "longitude": 113.5439,
+                    "current": "temperature_2m",
+                    "timezone": "Asia/Macau",
+                },
+                timeout=8,
+                headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"},
+            )
+            if r.status_code == 200:
+                payload = r.json()
+                current = payload.get("current") or {}
+                celsius = float(current["temperature_2m"])
+                _set_cache("weather_macau", {"celsius": celsius, "source": "open-meteo"})
+                return celsius
+            errors.append(f"open-meteo status={r.status_code}")
+        except Exception as e:
+            errors.append(f"open-meteo err={e}")
+    else:
+        errors.append("open-meteo dns_unresolved")
+
+    if _host_resolves("wttr.in"):
+        try:
+            r = requests.get(
+                "https://wttr.in/Macau?format=j1",
+                timeout=8,
+                headers={"User-Agent": "curl/8.0"},
+            )
+            if r.status_code == 200:
+                payload = r.json()
+                current = (payload.get("current_condition") or [{}])[0]
+                celsius = float(current["temp_C"])
+                _set_cache("weather_macau", {"celsius": celsius, "source": "wttr.in"})
+                return celsius
+            errors.append(f"wttr status={r.status_code}")
+        except Exception as e:
+            errors.append(f"wttr err={e}")
+    else:
+        errors.append("wttr dns_unresolved")
+
+    stale = _get_cache_any_age("weather_macau")
+    if stale and "celsius" in stale:
+        logger.warning("Weather fetch failed, fallback to stale cache: %s", " | ".join(errors))
+        return float(stale["celsius"])
+
+    logger.warning("Weather fetch failed, fallback to default: %s", " | ".join(errors))
+    return 25.0
 
 
 # ── 渡轮信号（TurboJET + Cotai Water Jet 双源）────────────────────────────
@@ -286,6 +356,8 @@ def _booking_prices_from_firecrawl(checkin: str, checkout: str) -> dict | None:
         f"&checkin={checkin}&checkout={checkout}"
         f"&nflt=class%3D3&lang=zh-hk&selected_currency=MOP"
     )
+    if not _url_host_resolves(url_3):
+        return None
     html_3 = _firecrawl_scrape(url_3)
     prices_3 = _parse_mop_prices(html_3, 100, 3000) if html_3 else []
 
@@ -571,6 +643,8 @@ def _firecrawl_search(query: str) -> str:
     key = os.getenv("FIRECRAWL_API_KEY", "")
     if not key:
         return ""
+    if not _host_resolves("api.firecrawl.dev"):
+        return ""
     try:
         r = requests.post(
             "https://api.firecrawl.dev/v2/search",
@@ -590,6 +664,8 @@ def _firecrawl_scrape(url: str) -> str:
     """Firecrawl scrape单页，返回markdown，失败返回空字符串。"""
     key = os.getenv("FIRECRAWL_API_KEY", "")
     if not key:
+        return ""
+    if not _host_resolves("api.firecrawl.dev"):
         return ""
     try:
         r = requests.post(

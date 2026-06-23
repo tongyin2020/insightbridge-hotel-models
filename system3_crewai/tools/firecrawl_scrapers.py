@@ -13,19 +13,36 @@ firecrawl_scrapers.py — 用 Firecrawl v4 尝试抓取 Playwright 无法获取�
 """
 
 from __future__ import annotations
-import os, re, json, time, sqlite3, requests as _requests
+import os, re, json, time, sqlite3, socket, requests as _requests
 from datetime import datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlparse
 
 # ── Monitor 缓存端点 ──────────────────────────────────────────────────────────
 MONITOR_BASE = "https://intelligence.insightbridge.global/api/monitor/latest"
 MONITOR_STALE_SECS = 7200   # 2小时内认为新鲜
+_DNS_CACHE: dict[str, bool] = {}
+
+
+def _host_resolves(host: str) -> bool:
+    if not host:
+        return False
+    if host in _DNS_CACHE:
+        return _DNS_CACHE[host]
+    try:
+        socket.getaddrinfo(host, 443)
+        _DNS_CACHE[host] = True
+    except Exception:
+        _DNS_CACHE[host] = False
+    return _DNS_CACHE[host]
 
 def _read_monitor_cache(key: str) -> dict | None:
     """
     从 Firecrawl Monitor webhook 缓存读取最新信号。
     返回 None 表示无数据或数据过期，调用方应降级到直接API。
     """
+    if not _host_resolves(urlparse(MONITOR_BASE).hostname or ""):
+        return None
     try:
         r = _requests.get(f"{MONITOR_BASE}/{key}", timeout=5)
         if r.status_code == 200:
@@ -78,6 +95,8 @@ def _get_app():
         return None
     key = os.getenv("FIRECRAWL_API_KEY", "")
     if not key or "your_key" in key:
+        return None
+    if not _host_resolves("api.firecrawl.dev"):
         return None
     return Firecrawl(api_key=key)
 

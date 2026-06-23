@@ -17,10 +17,11 @@ hotel_data_collector.py
 """
 
 from __future__ import annotations
-import os, sys, time, json, sqlite3, random, re, logging, argparse
+import os, sys, time, json, sqlite3, random, re, logging, argparse, socket
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional
+from urllib.parse import urlparse
 
 # ── 第三方库（pip3 install playwright requests beautifulsoup4 python-dotenv snownlp textblob）
 import requests
@@ -79,10 +80,33 @@ BRIGHTDATA_TOKEN = os.getenv("BRIGHTDATA_TOKEN", "")
 BRIGHTDATA_ZONE  = os.getenv("BRIGHTDATA_ZONE",  "insightbridge_hotels")
 BRIGHTDATA_URL   = "https://api.brightdata.com/request"
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "")
+ENABLE_PLAYWRIGHT_OFFICIAL_FALLBACK = os.getenv("ENABLE_PLAYWRIGHT_OFFICIAL_FALLBACK", "0") == "1"
 
 # 每日请求计数器（安全保护，防止意外超额）
 _BD_DAILY_LIMIT  = 1500   # 每天最多1500次 = 约 $2.25
 _BD_COUNT_FILE   = BASE_DIR / ".bd_daily_count.json"
+_DNS_CACHE: dict[str, bool] = {}
+
+
+def _host_resolves(host: str) -> bool:
+    """快速判断域名是否可解析，避免把环境 DNS 问题误判成业务抓取失败。"""
+    if not host:
+        return False
+    if host in _DNS_CACHE:
+        return _DNS_CACHE[host]
+    try:
+        socket.getaddrinfo(host, 443)
+        _DNS_CACHE[host] = True
+    except Exception:
+        _DNS_CACHE[host] = False
+    return _DNS_CACHE[host]
+
+
+def _url_host_resolves(url: str) -> bool:
+    try:
+        return _host_resolves(urlparse(url).hostname or "")
+    except Exception:
+        return False
 
 def _bd_check_and_count() -> bool:
     """检查今日请求是否超限，未超限则计数+1，返回True表示可以请求"""
@@ -102,6 +126,9 @@ def _bd_check_and_count() -> bool:
 
 def _bd_fetch(url: str, timeout: int = 35) -> requests.Response | None:
     """通过 BrightData Web Unlocker API 抓取 URL"""
+    if not _host_resolves(urlparse(BRIGHTDATA_URL).hostname or ""):
+        log.debug("[BrightData] api.brightdata.com 当前不可解析，跳过")
+        return None
     if not _bd_check_and_count():
         return None
     try:
@@ -121,6 +148,9 @@ def _bd_fetch(url: str, timeout: int = 35) -> requests.Response | None:
 def _fc_scrape(url: str, timeout: int = 35) -> str:
     """通过 Firecrawl scrape 单页，返回 markdown/html 文本，失败返回空字符串。"""
     if not FIRECRAWL_API_KEY or "your_" in FIRECRAWL_API_KEY:
+        return ""
+    if not _host_resolves("api.firecrawl.dev"):
+        log.debug("[Firecrawl] api.firecrawl.dev 当前不可解析，跳过")
         return ""
     try:
         r = requests.post(
@@ -1207,7 +1237,7 @@ def _get_browser_context():
 #  采集核心：官网价格（轨道A） — Playwright JS渲染引擎
 # ══════════════════════════════════════════════════════════════════════════
 def fetch_official_price(hotel: dict, checkin: str, sess: requests.Session) -> dict:
-    """用Playwright抓取酒店官网JS渲染后的价格"""
+    """抓取官网/直营价格，优先轻量通道，Playwright仅作末级兜底。"""
     checkout = (datetime.strptime(checkin, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
     result = {
         "hotel_id": hotel["id"], "checkin_date": checkin,
@@ -1372,183 +1402,39 @@ def fetch_official_price(hotel: dict, checkin: str, sess: requests.Session) -> d
     except Exception as e:
         result["notes"] = f"requests_err:{str(e)[:40]}"
 
-    # ── 方法3：Playwright JS渲染（最终备用，仅当requests也失败时）────────
-    # 注意：方法3 和 方法3b 分开异常处理，确保DNS/网络失败也能执行方法3b
-    ctx = None
-    try:
-        ctx = _get_browser_context()
-    except Exception as e_ctx:
-        result["notes"] = f"playwright_err:{str(e_ctx)[:60]}"
+    # ── 方法3：BrightData 轻量代理兜底（优先于 Playwright）───────────────
+    if result["official_bar"] is None:
+        bar_url = hotel.get("booking_url") or hotel.get("ibe_url", "")
+        bcom_id = hotel.get("booking_com_id", "")
+        slug = (hotel.get("en") or hotel.get("cn", "hotel")).lower() \
+            .replace(" ", "-").replace("'", "").replace(",", "")
+        bcom_url = (
+            f"https://www.booking.com/hotel/mo/{slug}.html"
+            f"?checkin={checkin}&checkout={checkout}"
+            f"&group_adults=2&no_rooms=1&selected_currency=MOP"
+        ) if bcom_id else ""
 
-    # ── 方法3c：MGM 专用预订引擎（booking.mgm.mo/api/calendar/get）──────
-    # MGM 官网是 Next.js SPA，价格只在独立子域名 booking.mgm.mo 的日历 API 返回
-    if ctx is not None and result.get("source_ok") != 1 and hotel.get("mgm_booking"):
-        mgm_result = _fetch_mgm_price(hotel, checkin, checkout, ctx)
-        if mgm_result:
-            result.update(mgm_result)
-            log.info(f"  ✅ {checkin}: BAR={result['official_bar']} | {result['notes']}")
-            return result
-        else:
-            result["notes"] = "mgm_calendar_no_price"
-
-    if ctx is not None and result.get("source_ok") != 1:
-        # ── 方法3 主流程：加载酒店官网 ────────────────────────────────────
-        # MGM 已由 Method 3c 处理（booking.mgm.mo），不再重复加载 www.mgm.mo
-        if not hotel.get("mgm_booking"):
-            html = ""
-            max_bookable = None
-            sold_out_detected = False
-            captured_prices: list[float] = []
-
+        for try_url, label in [(bar_url, "bd_official"), (bcom_url, "bd_booking")]:
+            if not try_url or result["official_bar"] is not None:
+                continue
             try:
-                page = ctx.new_page()
-
-                # 捕获所有 JSON 响应（移除 URL 关键词过滤，避免遗漏非标准 API 端点）
-                def on_response(response):
-                    try:
-                        if response.status == 200:
-                            ct = response.headers.get("content-type", "")
-                            if "json" in ct:
-                                try:
-                                    body = response.json()
-                                    text = json.dumps(body)
-                                except Exception:
-                                    try:
-                                        text = response.text()
-                                    except Exception:
-                                        return
-                                for p in _extract_prices(text):
-                                    if 200 < p < 80000:
-                                        captured_prices.append(p)
-                    except Exception:
-                        pass
-
-                page.on("response", on_response)
-
-                url = hotel["booking_url"]
-                sep = "&" if "?" in url else "?"
-                full_url = f"{url}{sep}checkin={checkin}&checkout={checkout}&adults=2&rooms=1"
-
-                page.goto(full_url, timeout=PW_GOTO_TIMEOUT_MS, wait_until="domcontentloaded")
-                try:
-                    page.wait_for_load_state("networkidle", timeout=PW_NETWORK_TIMEOUT_MS)
-                except PwTimeout:
-                    page.wait_for_timeout(PW_WAIT_MS)
-
-                html = page.content()
-                page_prices = _extract_prices(html)
-
-                # SynXis iframe 探测
-                if "be.synxis.com" in hotel.get("ibe_url", ""):
-                    try:
-                        for frame in page.frames:
-                            if frame == page.main_frame:
-                                continue
-                            frame_url = frame.url or ""
-                            if "synxis" in frame_url or "ibe" in frame_url.lower():
-                                try:
-                                    frame_html = frame.content()
-                                    if len(frame_html) > 200:
-                                        page_prices.extend(_extract_prices(frame_html))
-                                except Exception:
-                                    pass
-                    except Exception:
-                        pass
-
-                all_prices = sorted(set(captured_prices + page_prices))
-                _tier_floor = {"5_deluxe": 800, "5_star": 600, "4_star": 500, "3_star": 280}
-                _floor = _tier_floor.get(hotel.get("tier", ""), 200)
-                all_prices = [p for p in all_prices if _floor <= p < 80000]
-
-                max_bookable, sold_out_detected = _probe_inventory(page, html)
-                if max_bookable is not None:
-                    result["notes_inventory"] = f"max_bookable={max_bookable}"
-                if sold_out_detected:
-                    result["avail_status"] = "sold_out"
-                    result["notes_inventory"] = result.get("notes_inventory", "") + "|sold_out"
-
-                page.close()
-
-                if all_prices:
-                    avail = result.get("avail_status", "available")
-                    if avail != "sold_out":
-                        avail = "low" if (max_bookable is not None and max_bookable <= 5) else "available"
-                    result.update({
-                        "official_bar": all_prices[0],
-                        "official_rack": all_prices[-1] if len(all_prices) > 1 else None,
-                        "avail_status": avail,
-                        "source_ok": 1,
-                        "notes": f"playwright_js ({len(all_prices)}prices)"
-                                  + (f" max={max_bookable}" if max_bookable else "")
-                    })
-                    return result
-                else:
-                    if sold_out_detected or any(kw in html.lower() for kw in
-                            ["sold out", "已售罄", "unavailable", "no rooms", "sold_out"]):
-                        result["avail_status"] = "sold_out"
-                    result["notes"] = "playwright_no_price"
-
-            except PwTimeout:
-                result["notes"] = "playwright_timeout"
-            except Exception as e:
-                # 主页面加载失败（DNS/网络）→ 继续方法3b
-                result["notes"] = f"playwright_err:{str(e)[:60]}"
-
-        # ── 方法3b：SynXis IBE 直连（独立异常处理，主页面失败也会执行）──
-        # 覆盖场景：① 主页面DNS解析失败 ② 主页面无价格 ③ SynXis通过iframe加载
-        if "be.synxis.com" in hotel.get("ibe_url", "") and result.get("source_ok") != 1:
-            try:
-                ibe_base = hotel["ibe_url"]
-                ibe_direct_url = (
-                    f"{ibe_base}&arrive={checkin}&depart={checkout}"
-                    f"&rooms=1&adults=2&currency=MOP"
-                )
-                page2 = ctx.new_page()
-                synxis_captured: list[float] = []
-
-                def on_synxis_response(response):
-                    try:
-                        if response.status == 200:
-                            ct = response.headers.get("content-type", "")
-                            if "json" in ct or "javascript" in ct:
-                                try:
-                                    text2 = response.text()
-                                    for p in _extract_prices(text2):
-                                        if 200 < p < 80000:
-                                            synxis_captured.append(p)
-                                except Exception:
-                                    pass
-                    except Exception:
-                        pass
-
-                page2.on("response", on_synxis_response)
-                page2.goto(ibe_direct_url, timeout=8000, wait_until="domcontentloaded")
-                try:
-                    page2.wait_for_load_state("networkidle", timeout=PW_NETWORK_TIMEOUT_MS)
-                except PwTimeout:
-                    page2.wait_for_timeout(PW_WAIT_MS)
-                # 额外等待SynXis价格异步加载
-                page2.wait_for_timeout(PW_WAIT_MS)
-
-                ibe_html = page2.content()
-                _tier_floor = {"5_deluxe": 800, "5_star": 600, "4_star": 500, "3_star": 280}
-                _floor = _tier_floor.get(hotel.get("tier", ""), 200)
-                ibe_prices = [p for p in _extract_prices(ibe_html) if _floor <= p < 80000]
-                synxis_captured = [p for p in synxis_captured if _floor <= p < 80000]
-                all_synxis = sorted(set(synxis_captured + ibe_prices))
-                page2.close()
-
-                if all_synxis:
-                    result.update({
-                        "official_bar": all_synxis[0],
-                        "official_rack": all_synxis[-1] if len(all_synxis) > 1 else None,
-                        "avail_status": "available",
-                        "source_ok": 1,
-                        "notes": f"synxis_playwright ({len(all_synxis)}prices)"
-                    })
-                    return result
-            except Exception as e2:
-                log.debug(f"  synxis_playwright failed ({hotel['cn']}): {e2}")
+                bd_r = _bd_fetch(try_url, timeout=UNLOCKER_TIMEOUT)
+                if bd_r and bd_r.text:
+                    raw = re.findall(r'MOP\s*([\d]{1,2},[\d]{3}|[\d]{3,5})', bd_r.text)
+                    prices = [int(p.replace(",", "")) for p in raw
+                              if 400 <= int(p.replace(",", "")) <= 80000]
+                    if prices:
+                        result.update({
+                            "official_bar": float(min(prices)),
+                            "official_rack": float(max(prices)),
+                            "avail_status": "available",
+                            "source_ok": 1,
+                            "notes": label,
+                        })
+                        log.debug(f"  BrightData {label} OK: {hotel.get('cn','')} {min(prices)} MOP")
+                        return result
+            except Exception as e_bd:
+                log.debug(f"  BrightData {label} failed ({hotel.get('cn','?')}): {e_bd}")
 
     # ── 方法4：OTA兜底（Booking.com/Agoda） ─────────────────────────────────
     # 当所有官网方法均失败时，从OTA获取参考价格（MGM/T13等官网需人工交互或已下线）
@@ -1564,6 +1450,9 @@ def fetch_official_price(hotel: dict, checkin: str, sess: requests.Session) -> d
                     f"?checkin={checkin}&checkout={checkout}&group_adults=2&no_rooms=1"
                     f"&selected_currency=MOP"
                 )
+                if not _url_host_resolves(bcom_url):
+                    result["notes"] = "booking_dns_unresolved"
+                    return result
                 rb = sess.get(bcom_url, timeout=REQ_TIMEOUT_MEDIUM, verify=False,
                               headers={
                                   "Accept": "text/html,application/xhtml+xml,*/*",
@@ -1610,48 +1499,171 @@ def fetch_official_price(hotel: dict, checkin: str, sess: requests.Session) -> d
             except Exception as e_ota:
                 log.debug(f"  OTA fallback failed ({hotel['cn']}): {e_ota}")
 
-    # ── BrightData 兜底：Playwright/requests 全部失败时启用 ─────────────────
-    if result["official_bar"] is None:
-        bd_token = os.getenv("BRIGHTDATA_TOKEN", "2a8d98ab-51da-4f76-9454-ef7e648e6052")
-        bd_zone  = os.getenv("BRIGHTDATA_ZONE",  "insightbridge_hotels")
-        if bd_token and "your_" not in bd_token:
-            checkout = (datetime.strptime(checkin, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
-            # 优先抓官网，其次抓 Booking.com 每家酒店页
-            bar_url  = hotel.get("booking_url") or hotel.get("ibe_url", "")
-            bcom_id  = hotel.get("booking_com_id", "")
-            slug     = (hotel.get("en") or hotel.get("cn", "hotel")).lower() \
-                           .replace(" ", "-").replace("'", "").replace(",", "")
-            bcom_url = (f"https://www.booking.com/hotel/mo/{slug}.html"
-                        f"?checkin={checkin}&checkout={checkout}"
-                        f"&group_adults=2&no_rooms=1&selected_currency=MOP") if bcom_id else ""
+    # ── 方法5：Playwright JS渲染（末级兜底，仅当前面都失败时）────────────
+    if result.get("source_ok") != 1 and ENABLE_PLAYWRIGHT_OFFICIAL_FALLBACK:
+        ctx = None
+        try:
+            ctx = _get_browser_context()
+        except Exception as e_ctx:
+            result["notes"] = f"playwright_err:{str(e_ctx)[:60]}"
 
-            for try_url, label in [(bar_url, "bd_official"), (bcom_url, "bd_booking")]:
-                if not try_url or result["official_bar"] is not None:
-                    continue
+        if ctx is not None and hotel.get("mgm_booking"):
+            mgm_result = _fetch_mgm_price(hotel, checkin, checkout, ctx)
+            if mgm_result:
+                result.update(mgm_result)
+                log.info(f"  ✅ {checkin}: BAR={result['official_bar']} | {result['notes']}")
+                return result
+            result["notes"] = "mgm_calendar_no_price"
+
+        if ctx is not None:
+            if not hotel.get("mgm_booking"):
+                html = ""
+                max_bookable = None
+                sold_out_detected = False
+                captured_prices: list[float] = []
+
                 try:
-                    bd_r = requests.post(
-                        "https://api.brightdata.com/request",
-                        headers={"Content-Type": "application/json",
-                                 "Authorization": f"Bearer {bd_token}"},
-                        json={"zone": bd_zone, "url": try_url, "format": "raw"},
-                        timeout=UNLOCKER_TIMEOUT
+                    page = ctx.new_page()
+
+                    def on_response(response):
+                        try:
+                            if response.status == 200:
+                                ct = response.headers.get("content-type", "")
+                                if "json" in ct:
+                                    try:
+                                        body = response.json()
+                                        text = json.dumps(body)
+                                    except Exception:
+                                        try:
+                                            text = response.text()
+                                        except Exception:
+                                            return
+                                    for p in _extract_prices(text):
+                                        if 200 < p < 80000:
+                                            captured_prices.append(p)
+                        except Exception:
+                            pass
+
+                    page.on("response", on_response)
+                    url = hotel["booking_url"]
+                    sep = "&" if "?" in url else "?"
+                    full_url = f"{url}{sep}checkin={checkin}&checkout={checkout}&adults=2&rooms=1"
+                    page.goto(full_url, timeout=PW_GOTO_TIMEOUT_MS, wait_until="domcontentloaded")
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=PW_NETWORK_TIMEOUT_MS)
+                    except PwTimeout:
+                        page.wait_for_timeout(PW_WAIT_MS)
+
+                    html = page.content()
+                    page_prices = _extract_prices(html)
+
+                    if "be.synxis.com" in hotel.get("ibe_url", ""):
+                        try:
+                            for frame in page.frames:
+                                if frame == page.main_frame:
+                                    continue
+                                frame_url = frame.url or ""
+                                if "synxis" in frame_url or "ibe" in frame_url.lower():
+                                    try:
+                                        frame_html = frame.content()
+                                        if len(frame_html) > 200:
+                                            page_prices.extend(_extract_prices(frame_html))
+                                    except Exception:
+                                        pass
+                        except Exception:
+                            pass
+
+                    all_prices = sorted(set(captured_prices + page_prices))
+                    _tier_floor = {"5_deluxe": 800, "5_star": 600, "4_star": 500, "3_star": 280}
+                    _floor = _tier_floor.get(hotel.get("tier", ""), 200)
+                    all_prices = [p for p in all_prices if _floor <= p < 80000]
+
+                    max_bookable, sold_out_detected = _probe_inventory(page, html)
+                    if max_bookable is not None:
+                        result["notes_inventory"] = f"max_bookable={max_bookable}"
+                    if sold_out_detected:
+                        result["avail_status"] = "sold_out"
+                        result["notes_inventory"] = result.get("notes_inventory", "") + "|sold_out"
+
+                    page.close()
+
+                    if all_prices:
+                        avail = result.get("avail_status", "available")
+                        if avail != "sold_out":
+                            avail = "low" if (max_bookable is not None and max_bookable <= 5) else "available"
+                        result.update({
+                            "official_bar": all_prices[0],
+                            "official_rack": all_prices[-1] if len(all_prices) > 1 else None,
+                            "avail_status": avail,
+                            "source_ok": 1,
+                            "notes": f"playwright_js ({len(all_prices)}prices)"
+                                      + (f" max={max_bookable}" if max_bookable else "")
+                        })
+                        return result
+                    if sold_out_detected or any(kw in html.lower() for kw in
+                            ["sold out", "已售罄", "unavailable", "no rooms", "sold_out"]):
+                        result["avail_status"] = "sold_out"
+                    result["notes"] = "playwright_no_price"
+
+                except PwTimeout:
+                    result["notes"] = "playwright_timeout"
+                except Exception as e:
+                    result["notes"] = f"playwright_err:{str(e)[:60]}"
+
+            if "be.synxis.com" in hotel.get("ibe_url", "") and result.get("source_ok") != 1:
+                try:
+                    ibe_base = hotel["ibe_url"]
+                    ibe_direct_url = (
+                        f"{ibe_base}&arrive={checkin}&depart={checkout}"
+                        f"&rooms=1&adults=2&currency=MOP"
                     )
-                    if bd_r.status_code == 200 and bd_r.text:
-                        raw = re.findall(r'MOP\s*([\d]{1,2},[\d]{3}|[\d]{3,5})', bd_r.text)
-                        prices = [int(p.replace(",", "")) for p in raw
-                                  if 400 <= int(p.replace(",", "")) <= 80000]
-                        if prices:
-                            result.update({
-                                "official_bar": float(min(prices)),
-                                "official_rack": float(max(prices)),
-                                "avail_status": "available",
-                                "source_ok": 1,
-                                "notes": f"{label}|{result.get('notes','')}",
-                            })
-                            log.debug(f"  BrightData {label} OK: {hotel.get('cn','')} {min(prices)} MOP")
-                            break
-                except Exception as e_bd:
-                    log.debug(f"  BrightData {label} failed ({hotel.get('cn','?')}): {e_bd}")
+                    page2 = ctx.new_page()
+                    synxis_captured: list[float] = []
+
+                    def on_synxis_response(response):
+                        try:
+                            if response.status == 200:
+                                ct = response.headers.get("content-type", "")
+                                if "json" in ct or "javascript" in ct:
+                                    try:
+                                        text2 = response.text()
+                                        for p in _extract_prices(text2):
+                                            if 200 < p < 80000:
+                                                synxis_captured.append(p)
+                                    except Exception:
+                                        pass
+                        except Exception:
+                            pass
+
+                    page2.on("response", on_synxis_response)
+                    page2.goto(ibe_direct_url, timeout=8000, wait_until="domcontentloaded")
+                    try:
+                        page2.wait_for_load_state("networkidle", timeout=PW_NETWORK_TIMEOUT_MS)
+                    except PwTimeout:
+                        page2.wait_for_timeout(PW_WAIT_MS)
+                    page2.wait_for_timeout(PW_WAIT_MS)
+
+                    ibe_html = page2.content()
+                    _tier_floor = {"5_deluxe": 800, "5_star": 600, "4_star": 500, "3_star": 280}
+                    _floor = _tier_floor.get(hotel.get("tier", ""), 200)
+                    ibe_prices = [p for p in _extract_prices(ibe_html) if _floor <= p < 80000]
+                    synxis_captured = [p for p in synxis_captured if _floor <= p < 80000]
+                    all_synxis = sorted(set(synxis_captured + ibe_prices))
+                    page2.close()
+
+                    if all_synxis:
+                        result.update({
+                            "official_bar": all_synxis[0],
+                            "official_rack": all_synxis[-1] if len(all_synxis) > 1 else None,
+                            "avail_status": "available",
+                            "source_ok": 1,
+                            "notes": f"synxis_playwright ({len(all_synxis)}prices)"
+                        })
+                        return result
+                except Exception as e2:
+                    log.debug(f"  synxis_playwright failed ({hotel['cn']}): {e2}")
+    elif result.get("source_ok") != 1:
+        result["notes"] = "playwright_skipped_aux_mode"
 
     return result
 
