@@ -67,6 +67,12 @@ def file_age(path: Path) -> float | None:
     return age_from_dt(datetime.fromtimestamp(path.stat().st_mtime))
 
 
+def file_mtime_dt(path: Path) -> datetime | None:
+    if not path.exists():
+        return None
+    return datetime.fromtimestamp(path.stat().st_mtime)
+
+
 def parse_run_timestamp(path: Path) -> datetime | None:
     match = re.search(r"run_(\d{8}T\d{6})Z\.jsonl$", path.name)
     if not match:
@@ -77,24 +83,16 @@ def parse_run_timestamp(path: Path) -> datetime | None:
         return None
 
 
-def latest_s1_output() -> tuple[Path | None, datetime | None, float | None]:
+def latest_s1_output() -> tuple[Path | None, datetime | None, datetime | None, float | None]:
     files = list(S1_OUTPUT_DIR.glob("run_*.jsonl"))
     if not files:
-        return None, None, None
-
-    parsed = []
-    for path in files:
-        ts = parse_run_timestamp(path)
-        if ts is not None:
-            parsed.append((path, ts))
-
-    if parsed:
-        latest_path, latest_ts = sorted(parsed, key=lambda item: item[1], reverse=True)[0]
-        return latest_path, latest_ts, age_from_dt(latest_ts)
+        return None, None, None, None
 
     latest_path = sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)[0]
-    latest_ts = datetime.fromtimestamp(latest_path.stat().st_mtime)
-    return latest_path, latest_ts, age_from_dt(latest_ts)
+    start_ts = parse_run_timestamp(latest_path)
+    activity_ts = file_mtime_dt(latest_path)
+    activity_age = age_from_dt(activity_ts)
+    return latest_path, start_ts, activity_ts, activity_age
 
 
 def latest_db_activity(db_path: Path) -> tuple[int | None, str | None, int | None]:
@@ -146,14 +144,15 @@ def main() -> int:
 
     s1_pid = read_pid(S1_PID)
     s1_running = pid_running(s1_pid)
-    s1_file, s1_ts, s1_age = latest_s1_output()
+    s1_file, s1_ts, s1_activity_ts, s1_age = latest_s1_output()
     s1_live = bool(s1_running) and s1_age is not None and s1_age <= LIVE_WINDOW_MINUTES
 
     print("[System 1]")
     print(f"PID: {s1_pid if s1_pid is not None else 'missing'}")
     print(f"process_running: {s1_running}")
     print(f"latest_output: {s1_file.name if s1_file else 'missing'}")
-    print(f"output_timestamp: {s1_ts.strftime('%Y-%m-%d %H:%M:%S') if s1_ts else 'N/A'}")
+    print(f"run_start_timestamp: {s1_ts.strftime('%Y-%m-%d %H:%M:%S') if s1_ts else 'N/A'}")
+    print(f"last_file_activity: {s1_activity_ts.strftime('%Y-%m-%d %H:%M:%S') if s1_activity_ts else 'N/A'}")
     print(f"output_age: {fmt_age(s1_age)}")
     print(f"status: {'LIVE' if s1_live else 'ATTENTION'}")
     print_log_tail(S1_LOG)
