@@ -30,6 +30,8 @@ desktop.ini
 # ── 运行输出（JSONL / JSON 结果，体积大）──
 hotel_model_staging_output/
 db_archives/
+workspace_archive_20260625/
+final_three_models_release_20260625/*/output_samples/*.json
 
 # ── 临时文件 ──
 *.tmp

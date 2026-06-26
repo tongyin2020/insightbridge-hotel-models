@@ -24,9 +24,24 @@
   - `/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/final_three_models_release_20260625/embedded_runtime`
 - 旧三系统源码、旧检查脚本、旧日志和旧自动化入口已经退役，不再作为当前运行主线。
 
-## 退役区
+## 当前保留目录
 
-历史九模型/三系统资料已移入：
-- `/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/legacy_retired_20260625`
+- `final_three_models_release_20260625`
+- `mare_etl`
+- `reports`
+- `model_registry`
+- `db_archives`
 
-该目录仅作历史留档，不再作为当前生产/验证入口。
+以上目录仍然与最终三模型、训练链路或历史分析链路有关，因此保留在当前工作区。
+
+## 本地归档区
+
+以下历史运行产物和缓存已移入本地归档目录：
+- `/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/workspace_archive_20260625`
+
+该目录仅作本机历史留档，不参与当前最终三模型运行，也不会推送到 Git。
+
+## Drive 归档
+
+旧九模型完整退役归档已保存到 Google Drive：
+- `InsightBridge_legacy_archives/legacy_retired_20260625.tar.gz`
