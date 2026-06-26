@@ -127,7 +127,7 @@ def _bd_check_and_count() -> bool:
 def _bd_fetch(url: str, timeout: int = 35) -> requests.Response | None:
     """通过 BrightData Web Unlocker API 抓取 URL"""
     if not _host_resolves(urlparse(BRIGHTDATA_URL).hostname or ""):
-        log.debug("[BrightData] api.brightdata.com 当前不可解析，跳过")
+        log.warning("[BrightData] api.brightdata.com 当前不可解析，跳过 BrightData 抓取")
         return None
     if not _bd_check_and_count():
         return None
@@ -139,18 +139,22 @@ def _bd_fetch(url: str, timeout: int = 35) -> requests.Response | None:
             json={"zone": BRIGHTDATA_ZONE, "url": url, "format": "raw"},
             timeout=timeout
         )
-        return r if r.status_code == 200 else None
+        if r.status_code != 200:
+            log.warning("[BrightData] 请求失败 status=%s url=%s", r.status_code, url)
+            return None
+        return r
     except Exception as e:
-        log.debug(f"[BrightData] 请求失败: {e}")
+        log.warning(f"[BrightData] 请求失败: {e}")
         return None
 
 
 def _fc_scrape(url: str, timeout: int = 35) -> str:
     """通过 Firecrawl scrape 单页，返回 markdown/html 文本，失败返回空字符串。"""
     if not FIRECRAWL_API_KEY or "your_" in FIRECRAWL_API_KEY:
+        log.warning("[Firecrawl] API key 缺失或占位，跳过 Firecrawl 抓取")
         return ""
     if not _host_resolves("api.firecrawl.dev"):
-        log.debug("[Firecrawl] api.firecrawl.dev 当前不可解析，跳过")
+        log.warning("[Firecrawl] api.firecrawl.dev 当前不可解析，跳过 Firecrawl 抓取")
         return ""
     try:
         r = requests.post(
@@ -165,8 +169,9 @@ def _fc_scrape(url: str, timeout: int = 35) -> str:
         if r.status_code == 200:
             data = r.json().get("data") or {}
             return f"{data.get('markdown','')}\n{data.get('html','')}"
+        log.warning("[Firecrawl] scrape失败 status=%s url=%s", r.status_code, url)
     except Exception as e:
-        log.debug(f"[Firecrawl] scrape失败: {e}")
+        log.warning(f"[Firecrawl] scrape失败: {e}")
     return ""
 
 

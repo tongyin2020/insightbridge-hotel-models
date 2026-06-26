@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 import sys
@@ -13,6 +14,7 @@ from dotenv import load_dotenv
 PACKAGE_ROOT = Path(__file__).resolve().parent
 RUNTIME_ROOT = PACKAGE_ROOT / "embedded_runtime"
 OUTPUT_TS_FMT = "%Y%m%dT%H%M%SZ"
+LOG = logging.getLogger("final_three_models.runtime")
 
 for path in (
     RUNTIME_ROOT,
@@ -56,6 +58,7 @@ def _safe_dsec_signal(month: int) -> float:
 
         db_path = RUNTIME_ROOT / "hotel_collector" / "hotel_real_data.db"
         if not db_path.exists():
+            LOG.warning("DSEC fallback: hotel_real_data.db missing at %s; using 0.0 demand signal", db_path)
             return 0.0
         conn = sqlite3.connect(str(db_path), timeout=5)
         try:
@@ -67,7 +70,8 @@ def _safe_dsec_signal(month: int) -> float:
             )
         finally:
             conn.close()
-    except Exception:
+    except Exception as exc:
+        LOG.warning("DSEC fallback: failed to compute signal for month=%s; using 0.0 (%s)", month, exc)
         return 0.0
 
 
@@ -183,28 +187,47 @@ def build_market_context(sim_hour: int = 0, days_ahead: int = 1) -> dict[str, An
     now = datetime.now()
     checkin = (now + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
     checkout = (now + timedelta(days=days_ahead + 1)).strftime("%Y-%m-%d")
+    real_data_status = "ok"
+    fc_data_status = "ok"
     try:
         real_data = get_all_real_signals(checkin, checkout)
-    except Exception:
+    except Exception as exc:
+        LOG.warning(
+            "Real-data fallback: get_all_real_signals failed for %s -> %s; using empty payload",
+            checkin,
+            exc,
+        )
         real_data = {}
+        real_data_status = f"fallback:{type(exc).__name__}"
     try:
         fc_data = get_all_firecrawl_signals(checkin, checkout)
-    except Exception:
+    except Exception as exc:
+        LOG.warning(
+            "Firecrawl fallback: get_all_firecrawl_signals failed for %s -> %s; using empty payload",
+            checkin,
+            exc,
+        )
         fc_data = {}
+        fc_data_status = f"fallback:{type(exc).__name__}"
     signal = build_system3_market_signal(sim_hour, real_data, fc_data)
     return {
         "run_at": now.strftime("%Y-%m-%d %H:%M:%S"),
         "run_ts": now.strftime(OUTPUT_TS_FMT),
         "month": now.month,
         "real_data": real_data,
+        "real_data_status": real_data_status,
         "fc_data": fc_data,
+        "fc_data_status": fc_data_status,
         "signal": signal,
     }
 
 
 def select_hotels(hotel_id: str | None = None) -> list[dict[str, Any]]:
     if hotel_id:
-        return [hotel for hotel in ALL_HOTELS if hotel["hotel_id"] == hotel_id]
+        matches = [hotel for hotel in ALL_HOTELS if hotel["hotel_id"] == hotel_id]
+        if not matches:
+            raise ValueError(f"Unknown hotel_id: {hotel_id}")
+        return matches
     return list(ALL_HOTELS)
 
 

@@ -25,6 +25,8 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 _V32_LOGGER = logging.getLogger("mare.pricing_engine.v32")
 _V32_ML_FALLBACK_COUNTER = 0
+_V32_LAST_ML_STATUS = "unknown"
+_V32_LAST_ML_ERROR = ""
 
 DEFAULT_WEIGHTS = {
     "season_multipliers": {
@@ -191,9 +193,11 @@ def demand_score_ml(data):
 
 
 def demand_score_router(data):
-    global _V32_ML_FALLBACK_COUNTER
+    global _V32_ML_FALLBACK_COUNTER, _V32_LAST_ML_STATUS, _V32_LAST_ML_ERROR
 
     if os.getenv("MARE_USE_ML", "0") != "1":
+        _V32_LAST_ML_STATUS = "rule_disabled"
+        _V32_LAST_ML_ERROR = ""
         score, breakdown = demand_score(data)
         breakdown.append({"name": "_v32_path", "raw_value": 0, "value_used": 0, "contribution": 0.0, "meta": "rule"})
         return score, breakdown
@@ -204,16 +208,22 @@ def demand_score_router(data):
         ratio = 1.0
 
     if ratio < 1.0 and random.random() > ratio:
+        _V32_LAST_ML_STATUS = "rule_by_ratio"
+        _V32_LAST_ML_ERROR = ""
         score, breakdown = demand_score(data)
         breakdown.append({"name": "_v32_path", "raw_value": ratio, "value_used": ratio, "contribution": 0.0, "meta": "rule_by_ratio"})
         return score, breakdown
 
     try:
         score, breakdown = demand_score_ml(data)
-        breakdown.append({"name": "_v32_path", "raw_value": 1, "value_used": 1, "contribution": 0.0, "meta": "lightgbm"})
+        _V32_LAST_ML_STATUS = "lightgbm"
+        _V32_LAST_ML_ERROR = ""
+        breakdown.append({"name": "_v32_path", "raw_value": 1, "value_used": 1, "contribution": 0.0, "meta": "lightgbm_ok"})
         return score, breakdown
     except Exception as exc:
         _V32_ML_FALLBACK_COUNTER += 1
+        _V32_LAST_ML_STATUS = "rule_fallback"
+        _V32_LAST_ML_ERROR = str(exc)
         _V32_LOGGER.warning(
             "[v3.2] ML path failed, fallback to rule path (count=%s): %s",
             _V32_ML_FALLBACK_COUNTER,
@@ -227,6 +237,15 @@ def demand_score_router(data):
                 "value_used": _V32_ML_FALLBACK_COUNTER,
                 "contribution": 0.0,
                 "meta": f"rule_fallback:{str(exc)[:160]}",
+            }
+        )
+        breakdown.append(
+            {
+                "name": "_v32_ml_fallback_count",
+                "raw_value": _V32_ML_FALLBACK_COUNTER,
+                "value_used": _V32_ML_FALLBACK_COUNTER,
+                "contribution": 0.0,
+                "meta": "ml_fallback_count",
             }
         )
         return score, breakdown
