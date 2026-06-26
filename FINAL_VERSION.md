@@ -11,10 +11,8 @@ Current active commands:
 - `python3 /Users/tongyin/Desktop/InsightBridge_九大模型_v2026/check_final_models.py`
 
 Current architecture status:
-- old three-system / nine-model framework: retired
 - final three-model runtime: active
-- old framework archive path:
-  - `/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/legacy_retired_20260625`
+- old comparison framework: removed from desktop runtime, archived to Google Drive only
 
 Current validation status:
 - Final MARE: runnable
