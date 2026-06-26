@@ -1,0 +1,47 @@
+project: InsightBridge
+as_of: 2026-06-25
+final_models:
+  mare:
+    selected_system: system_3
+    selected_model_name: MARE_ALL_FC
+    purpose: 每日房价最优化
+    revenue_uplift_normal: 6.81%
+    fallback_reference:
+      - system_1: MARE
+      - system_2: MARE_ALL
+    merge_points:
+      - 吸收System 1更保守的定价风格
+      - 保留System 3当前收益最优主框架
+  director:
+    selected_system: system_3
+    selected_model_name: DIRECTOR_CRM_ALL_FC
+    purpose: 三系统集成/CRM直销策略
+    revenue_uplift_normal: 44.25%
+    revenue_uplift_extreme: 25.02%
+    fallback_reference:
+      - system_1: Director
+      - system_2: DIRECTOR_CRM_ALL
+    merge_points:
+      - 保留System 3收益结构
+      - 吸收System 1/2价格口径稳定性
+  selfacq:
+    selected_system: system_1
+    selected_model_name: SelfACQ
+    purpose: 自主寻客
+    revenue_uplift_normal: 34.02%
+    revenue_uplift_extreme: 34.18%
+    fallback_reference:
+      - system_2: SELFACQ_ALL
+      - system_3: SELFACQ_ALL_FC
+    merge_points:
+      - 保留System 1最高收益主框架
+      - 借鉴System 2迁移稳定性
+artifacts:
+  required_folders:
+    - 01_MARE_Final
+    - 02_Director_Final
+    - 03_SelfACQ_Final
+    - 04_Final_Selection_Report
+    - 05_Config_and_Prompts
+    - 06_Evaluation_and_Benchmark
+    - 07_Deployment_Checklist

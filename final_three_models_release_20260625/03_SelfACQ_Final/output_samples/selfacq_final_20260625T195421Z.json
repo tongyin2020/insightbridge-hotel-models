@@ -1,0 +1,197 @@
+{
+  "model_family": "SELFACQ",
+  "selected_system": "System 1",
+  "selected_model": "SelfACQ",
+  "execution_note": "System 1 was selected as the best-performing harness; SelfACQ runtime core remains the shared hotel engine used by the harness.",
+  "merge_points": [
+    "retain System 1 highest-yield backbone",
+    "borrow System 2 migration stability where useful"
+  ],
+  "run_context": {
+    "run_at": "2026-06-25 19:54:21",
+    "run_ts": "20260625T195421Z",
+    "month": 6,
+    "real_data": {
+      "weather": 0.0,
+      "weather_celsius": 27.6,
+      "flight_ferry": 0.0,
+      "event_ticket_sales": 0.0,
+      "visitors_stats": 0.0,
+      "mha_adr_mass": 1091.7,
+      "mha_occ_mass": 0.9545,
+      "mha_signal_mass": 1.0,
+      "mha_adr_luxury": 1560.0,
+      "mha_occ_luxury": 0.966,
+      "mha_signal_luxury": 1.0,
+      "mha_latest_period": "2026-02",
+      "border_flow": 0.0,
+      "border_flow_source": "fc_no_data",
+      "zhuhai_saturation": 0.25,
+      "zhuhai_source": "fc_zhuhai_no_price",
+      "event_density_fc": 0.0,
+      "event_ticket_fc": 0.0,
+      "event_fc_source": "fc_event_failed",
+      "competitor_price_real": 919.3,
+      "competitor_price_min": 849,
+      "competitor_availability_real": 0.12,
+      "upper_tier_adr_real": 1232.5,
+      "booking_prices_3": [
+        849,
+        922,
+        987
+      ],
+      "booking_prices_45": [
+        938,
+        1005,
+        1426,
+        1561
+      ],
+      "data_sources": {
+        "weather": "Open-Meteo (real-time)",
+        "flight_ferry": "TurboJET + CotaiWaterJet 双源 (real-time)",
+        "event_ticket_sales": "IR活动缓存 / Firecrawl / optional Playwright (fc_event_failed)",
+        "visitors_stats": "DSEC monthly report (encoded)",
+        "mha_market_snapshot": "MHA monthly report (2026-02)",
+        "competitor_price": "price_snapshots / Firecrawl / DSEC / optional Playwright",
+        "upper_tier_adr": "price_snapshots / Firecrawl / DSEC / optional Playwright",
+        "border_flow": "Firecrawl TDM新闻(fc_no_data)",
+        "zhuhai_saturation": "Firecrawl珠海搜索(fc_zhuhai_no_price)",
+        "ota_booking_pace": "scenario_or_local_fallback"
+      }
+    },
+    "fc_data": {
+      "border_flow_fc": 1.0,
+      "border_flow_source": "firecrawl_search",
+      "zhuhai_saturation_fc": 0.743,
+      "zhuhai_source": "firecrawl_search",
+      "ota_booking_pace_fc": 0.0,
+      "ota_pace_source": "booking_fc",
+      "agoda_prices_23": [
+        510,
+        570,
+        992,
+        606,
+        834,
+        1699
+      ],
+      "agoda_avg_23": 868.5,
+      "agoda_source": "agoda_fc_search",
+      "event_density_fc": 1.0,
+      "event_ticket_sales_fc": 1.0,
+      "event_source": "firecrawl_tourism",
+      "_border_detail": {
+        "signal": 1.0,
+        "source": "firecrawl_search",
+        "raw": "155.16万人次",
+        "method": "text_extract"
+      },
+      "_zhuhai_detail": {
+        "signal": 0.743,
+        "avg_price_rmb": 613.0,
+        "source": "firecrawl_search",
+        "sample_count": 5
+      },
+      "_pace_detail": {
+        "signal": 0.0,
+        "urgency_count": 0,
+        "sold_out": 0,
+        "source": "booking_fc"
+      },
+      "_event_detail": {
+        "event_density": 1.0,
+        "event_ticket_sales": 1.0,
+        "source": "firecrawl_tourism",
+        "raw": "major:38 holiday:21"
+      }
+    },
+    "signal": {
+      "season": "off_peak",
+      "is_weekend": false,
+      "is_holiday": false,
+      "hour_of_day": 19,
+      "weather_signal": 0.0,
+      "weather_celsius": 27.6,
+      "flight_ferry": 0.0,
+      "event_ticket_sales": 1.0,
+      "event_density": 1.0,
+      "event_source": "firecrawl_tourism",
+      "visitors_stats": 0.0,
+      "mha_occ_mass": 0.9545,
+      "mha_occ_luxury": 0.966,
+      "mha_market_occ": 1.0,
+      "blended_market_demand_signal": 0.6963,
+      "mha_demand_state": "HIGH",
+      "dsec_market_occ": 0.2408,
+      "border_flow": 1.0,
+      "border_flow_source": "firecrawl_search",
+      "zhuhai_saturation": 0.743,
+      "zhuhai_source": "firecrawl_search",
+      "ota_booking_pace": 0.0,
+      "ota_pace_source": "booking_fc",
+      "holiday": 0.0,
+      "weekend": 0.0
+    }
+  },
+  "summary": {
+    "samples": 1,
+    "avg_price": 1172.0,
+    "anomalies": 0
+  },
+  "records": [
+    {
+      "hotel_id": "MAC_3ST_EMPE_059",
+      "hotel_name": "帝濠酒店",
+      "star": 3,
+      "scenario": "NORMAL_OPS",
+      "scenario_category": "normal",
+      "issues": [],
+      "result": {
+        "hotel_id": "MAC_3ST_EMPE_059",
+        "scenario": "NORMAL_OPS",
+        "scenario_category": "normal",
+        "guest_segment": "budget",
+        "loyalty_tier": "none",
+        "objective_mode": "maximize_revenue",
+        "ota_standard_price": 1214.0,
+        "ota_net_revenue": 996.0,
+        "direct_offer_price": 1172,
+        "direct_net_revenue": 1172.0,
+        "direct_wins_vs_ota": true,
+        "direct_bias": 0.1,
+        "bundle_aggressiveness": 0.8,
+        "occupancy": 0.65,
+        "demand_high": true,
+        "direct_net_profit_after_cac": 1084.0,
+        "ota_net_profit": 996.0,
+        "acquisition_cost": 88.0,
+        "direct_advantage_after_cac": 88.0,
+        "selfacq_guard_action": "pass",
+        "selfacq_profit_guard_passed": true,
+        "elasticity_validated_price": 1200,
+        "predicted_occupancy": 0.8149,
+        "revpar_lift_vs_market": "+1.9%",
+        "elasticity_used": 1.854,
+        "selfacq_v6_ota_net": 995.69,
+        "selfacq_v6_direct_ltv": 98.34,
+        "selfacq_v6_advantage": -897.35,
+        "selfacq_v6_wins": false,
+        "hotel_profile_version": "V6",
+        "recommended_price": 1172.0,
+        "predicted_revpar": 955.06,
+        "expected_revenue_lift": "+1.90%",
+        "price_risk_score": 35.0,
+        "opportunity_score": 0.0,
+        "rate_confidence": 75.0,
+        "revenue_attribution": {
+          "baseline_revpar": 789.27,
+          "optimized_revpar": 965.58,
+          "mare_contribution": 0.0,
+          "crm_contribution": 0.0,
+          "selfacq_contribution": 176.31,
+          "total_lift_mop": 176.31,
+          "total_lift_pct": 22.34
+        }
+      }
+    }
+  ]
+}

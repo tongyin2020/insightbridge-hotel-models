@@ -1,0 +1,140 @@
+{
+  "model_family": "MARE",
+  "selected_system": "System 3",
+  "selected_model": "MARE_ALL_FC",
+  "merge_points": [
+    "retain System 3 main framework",
+    "absorb System 1 conservative pricing style"
+  ],
+  "run_context": {
+    "run_at": "2026-06-25 19:53:12",
+    "run_ts": "20260625T195312Z",
+    "month": 6,
+    "real_data": {
+      "weather": 0.0,
+      "weather_celsius": 27.6,
+      "flight_ferry": 0.0,
+      "event_ticket_sales": 0.0,
+      "visitors_stats": 0.0,
+      "mha_adr_mass": 1091.7,
+      "mha_occ_mass": 0.9545,
+      "mha_signal_mass": 1.0,
+      "mha_adr_luxury": 1560.0,
+      "mha_occ_luxury": 0.966,
+      "mha_signal_luxury": 1.0,
+      "mha_latest_period": "2026-02",
+      "border_flow": 0.0,
+      "border_flow_source": "fc_no_data",
+      "zhuhai_saturation": 0.25,
+      "zhuhai_source": "fc_zhuhai_no_price",
+      "event_density_fc": 0.0,
+      "event_ticket_fc": 0.0,
+      "event_fc_source": "fc_event_failed",
+      "competitor_price_real": 919.3,
+      "competitor_price_min": 849,
+      "competitor_availability_real": 0.12,
+      "upper_tier_adr_real": 1232.5,
+      "booking_prices_3": [
+        849,
+        922,
+        987
+      ],
+      "booking_prices_45": [
+        938,
+        1005,
+        1426,
+        1561
+      ],
+      "data_sources": {
+        "weather": "Open-Meteo (real-time)",
+        "flight_ferry": "TurboJET + CotaiWaterJet 双源 (real-time)",
+        "event_ticket_sales": "IR活动缓存 / Firecrawl / optional Playwright (fc_event_failed)",
+        "visitors_stats": "DSEC monthly report (encoded)",
+        "mha_market_snapshot": "MHA monthly report (2026-02)",
+        "competitor_price": "price_snapshots / Firecrawl / DSEC / optional Playwright",
+        "upper_tier_adr": "price_snapshots / Firecrawl / DSEC / optional Playwright",
+        "border_flow": "Firecrawl TDM新闻(fc_no_data)",
+        "zhuhai_saturation": "Firecrawl珠海搜索(fc_zhuhai_no_price)",
+        "ota_booking_pace": "scenario_or_local_fallback"
+      }
+    },
+    "fc_data": {
+      "border_flow_fc": 1.0,
+      "border_flow_source": "firecrawl_search",
+      "zhuhai_saturation_fc": 0.743,
+      "zhuhai_source": "firecrawl_search",
+      "ota_booking_pace_fc": 0.0,
+      "ota_pace_source": "booking_fc",
+      "agoda_prices_23": [
+        510,
+        570,
+        992,
+        606,
+        834,
+        1699
+      ],
+      "agoda_avg_23": 868.5,
+      "agoda_source": "agoda_fc_search",
+      "event_density_fc": 1.0,
+      "event_ticket_sales_fc": 1.0,
+      "event_source": "firecrawl_tourism",
+      "_border_detail": {
+        "signal": 1.0,
+        "source": "firecrawl_search",
+        "raw": "155.16万人次",
+        "method": "text_extract"
+      },
+      "_zhuhai_detail": {
+        "signal": 0.743,
+        "avg_price_rmb": 613.0,
+        "source": "firecrawl_search",
+        "sample_count": 5
+      },
+      "_pace_detail": {
+        "signal": 0.0,
+        "urgency_count": 0,
+        "sold_out": 0,
+        "source": "booking_fc"
+      },
+      "_event_detail": {
+        "event_density": 1.0,
+        "event_ticket_sales": 1.0,
+        "source": "firecrawl_tourism",
+        "raw": "major:38 holiday:21"
+      }
+    },
+    "signal": {
+      "season": "off_peak",
+      "is_weekend": false,
+      "is_holiday": false,
+      "hour_of_day": 19,
+      "weather_signal": 0.0,
+      "weather_celsius": 27.6,
+      "flight_ferry": 0.0,
+      "event_ticket_sales": 1.0,
+      "event_density": 1.0,
+      "event_source": "firecrawl_tourism",
+      "visitors_stats": 0.0,
+      "mha_occ_mass": 0.9545,
+      "mha_occ_luxury": 0.966,
+      "mha_market_occ": 1.0,
+      "blended_market_demand_signal": 0.6963,
+      "mha_demand_state": "HIGH",
+      "dsec_market_occ": 0.2408,
+      "border_flow": 1.0,
+      "border_flow_source": "firecrawl_search",
+      "zhuhai_saturation": 0.743,
+      "zhuhai_source": "firecrawl_search",
+      "ota_booking_pace": 0.0,
+      "ota_pace_source": "booking_fc",
+      "holiday": 0.0,
+      "weekend": 0.0
+    }
+  },
+  "summary": {
+    "samples": 0,
+    "avg_price": 0.0,
+    "anomalies": 0
+  },
+  "records": []
+}

@@ -1,19 +1,12 @@
-# MARE v3.2 Fusion Plan
+# Final Runtime Note
 
-This is not a small MARE patch.
+`MARE v3.2` 相关 ML、ETL、特征和收益逻辑已经保留在当前项目中，但当前主运行入口不再是旧三系统框架。
 
-The current MARE codebase had no ETL pipeline, no feature store, and no ML inference path. The v3.2 work therefore adds two new subsystems beside the existing rule-based `pricing_engine.py`:
+从现在开始：
 
-1. `mare_ml/`
-   Side-by-side LightGBM demand scoring with router-based fallback.
-2. `mare_etl/`
-   Independent extract-transform-load pipeline backed by `feature_store.db`.
+- 主运行对象是最终三个模型
+- 主运行目录是 `final_three_models_release_20260625`
+- 主运行依赖已经内嵌到：
+  - `final_three_models_release_20260625/embedded_runtime`
 
-The legacy `demand_score()` path remains intact. Production risk is controlled by:
-
-- `MARE_USE_ML=0` by default
-- `MARE_USE_ML_RATIO` for grey rollout
-- automatic fallback to the rule path on any ML exception
-
-DB views are intentionally deferred. They do not block ETL, training, or inference.
-
+旧三系统及其九模型对照运行链已经退役，仅保留历史归档，不再作为当前执行口径。

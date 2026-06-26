@@ -1,29 +1,23 @@
-# InsightBridge Final Version
+# InsightBridge Final Three Models Version
 
-Final desktop project path:
+Current desktop project path:
 - `/Users/tongyin/Desktop/InsightBridge_九大模型_v2026`
 
-Final Git commit:
-- `a9c9fc7`
+Current active runtime:
+- `final_three_models_release_20260625`
 
-GitHub sync:
-- pushed to `origin/main`
+Current active commands:
+- `python3 /Users/tongyin/Desktop/InsightBridge_九大模型_v2026/run_final_models_only.py`
+- `python3 /Users/tongyin/Desktop/InsightBridge_九大模型_v2026/check_final_models.py`
 
-Main health-check commands:
-- `python3 /Users/tongyin/Desktop/InsightBridge_九大模型_v2026/check_s1_s2.py`
-- `python3 /Users/tongyin/Desktop/InsightBridge_九大模型_v2026/check_3_systems.py`
-- `python3 /Users/tongyin/Desktop/InsightBridge_九大模型_v2026/check_9_models_live.py`
+Current architecture status:
+- old three-system / nine-model framework: retired
+- final three-model runtime: active
+- old framework archive path:
+  - `/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/legacy_retired_20260625`
 
-Main restart command:
-- `/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/restart_3_systems.sh`
-
-Core runtime entry points:
-- `system1_chatgpt_harness/run_21d_harness.py`
-- `system2_claude_simulation/run_simulation.py`
-- `system3_crewai/main.py`
-
-Current status at finalization:
-- System 1: live
-- System 2: live
-- System 3: live
-- MARE ML state: updating normally
+Current validation status:
+- Final MARE: runnable
+- Final Director: runnable
+- Final SelfACQ: runnable
+- Final three-model suite: verified after retirement of old framework

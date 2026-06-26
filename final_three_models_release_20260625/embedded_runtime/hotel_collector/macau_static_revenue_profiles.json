@@ -1,0 +1,64 @@
+{
+  "meta": {
+    "data_source": "Macau static operating profiles derived from DSEC/MHA official data plus Macau market operating judgment",
+    "last_update": "2026-06",
+    "principles": [
+      "No hotel-specific dynamic learning",
+      "Treat 5-star and 3-4-star as different markets",
+      "Use static elasticity and optimal occupancy targets",
+      "Optimize total contribution, not occupancy maximization"
+    ]
+  },
+  "profiles": {
+    "5star_resort_leisure_peak": {
+      "elasticity": 0.5,
+      "max_price_premium": 0.4,
+      "optimal_occupancy": 0.78
+    },
+    "5star_resort_leisure_shoulder": {
+      "elasticity": 0.7,
+      "max_price_premium": 0.25,
+      "optimal_occupancy": 0.82
+    },
+    "5star_resort_leisure_low": {
+      "elasticity": 0.9,
+      "max_price_premium": 0.1,
+      "optimal_occupancy": 0.74
+    },
+    "5star_business_mice": {
+      "elasticity": 0.4,
+      "max_price_premium": 0.5,
+      "optimal_occupancy": 0.8
+    },
+    "4star_leisure_peak": {
+      "elasticity": 1.0,
+      "max_price_premium": 0.15,
+      "optimal_occupancy": 0.84
+    },
+    "4star_leisure_shoulder": {
+      "elasticity": 1.3,
+      "max_price_premium": 0.05,
+      "optimal_occupancy": 0.79
+    },
+    "4star_leisure_low": {
+      "elasticity": 1.6,
+      "max_price_premium": 0.0,
+      "optimal_occupancy": 0.72
+    },
+    "3star_ota_peak": {
+      "elasticity": 1.5,
+      "max_price_premium": 0.05,
+      "optimal_occupancy": 0.88
+    },
+    "3star_ota_shoulder": {
+      "elasticity": 1.8,
+      "max_price_premium": 0.0,
+      "optimal_occupancy": 0.82
+    },
+    "3star_ota_low": {
+      "elasticity": 2.2,
+      "max_price_premium": -0.1,
+      "optimal_occupancy": 0.74
+    }
+  }
+}

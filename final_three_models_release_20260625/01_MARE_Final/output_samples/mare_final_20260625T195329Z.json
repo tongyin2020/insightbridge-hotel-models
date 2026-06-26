@@ -1,0 +1,422 @@
+{
+  "model_family": "MARE",
+  "selected_system": "System 3",
+  "selected_model": "MARE_ALL_FC",
+  "merge_points": [
+    "retain System 3 main framework",
+    "absorb System 1 conservative pricing style"
+  ],
+  "run_context": {
+    "run_at": "2026-06-25 19:53:29",
+    "run_ts": "20260625T195329Z",
+    "month": 6,
+    "real_data": {
+      "weather": 0.0,
+      "weather_celsius": 27.6,
+      "flight_ferry": 0.0,
+      "event_ticket_sales": 0.0,
+      "visitors_stats": 0.0,
+      "mha_adr_mass": 1091.7,
+      "mha_occ_mass": 0.9545,
+      "mha_signal_mass": 1.0,
+      "mha_adr_luxury": 1560.0,
+      "mha_occ_luxury": 0.966,
+      "mha_signal_luxury": 1.0,
+      "mha_latest_period": "2026-02",
+      "border_flow": 0.0,
+      "border_flow_source": "fc_no_data",
+      "zhuhai_saturation": 0.25,
+      "zhuhai_source": "fc_zhuhai_no_price",
+      "event_density_fc": 0.0,
+      "event_ticket_fc": 0.0,
+      "event_fc_source": "fc_event_failed",
+      "competitor_price_real": 919.3,
+      "competitor_price_min": 849,
+      "competitor_availability_real": 0.12,
+      "upper_tier_adr_real": 1232.5,
+      "booking_prices_3": [
+        849,
+        922,
+        987
+      ],
+      "booking_prices_45": [
+        938,
+        1005,
+        1426,
+        1561
+      ],
+      "data_sources": {
+        "weather": "Open-Meteo (real-time)",
+        "flight_ferry": "TurboJET + CotaiWaterJet 双源 (real-time)",
+        "event_ticket_sales": "IR活动缓存 / Firecrawl / optional Playwright (fc_event_failed)",
+        "visitors_stats": "DSEC monthly report (encoded)",
+        "mha_market_snapshot": "MHA monthly report (2026-02)",
+        "competitor_price": "price_snapshots / Firecrawl / DSEC / optional Playwright",
+        "upper_tier_adr": "price_snapshots / Firecrawl / DSEC / optional Playwright",
+        "border_flow": "Firecrawl TDM新闻(fc_no_data)",
+        "zhuhai_saturation": "Firecrawl珠海搜索(fc_zhuhai_no_price)",
+        "ota_booking_pace": "scenario_or_local_fallback"
+      }
+    },
+    "fc_data": {
+      "border_flow_fc": 1.0,
+      "border_flow_source": "firecrawl_search",
+      "zhuhai_saturation_fc": 0.743,
+      "zhuhai_source": "firecrawl_search",
+      "ota_booking_pace_fc": 0.0,
+      "ota_pace_source": "booking_fc",
+      "agoda_prices_23": [
+        510,
+        570,
+        992,
+        606,
+        834,
+        1699
+      ],
+      "agoda_avg_23": 868.5,
+      "agoda_source": "agoda_fc_search",
+      "event_density_fc": 1.0,
+      "event_ticket_sales_fc": 1.0,
+      "event_source": "firecrawl_tourism",
+      "_border_detail": {
+        "signal": 1.0,
+        "source": "firecrawl_search",
+        "raw": "155.16万人次",
+        "method": "text_extract"
+      },
+      "_zhuhai_detail": {
+        "signal": 0.743,
+        "avg_price_rmb": 613.0,
+        "source": "firecrawl_search",
+        "sample_count": 5
+      },
+      "_pace_detail": {
+        "signal": 0.0,
+        "urgency_count": 0,
+        "sold_out": 0,
+        "source": "booking_fc"
+      },
+      "_event_detail": {
+        "event_density": 1.0,
+        "event_ticket_sales": 1.0,
+        "source": "firecrawl_tourism",
+        "raw": "major:38 holiday:21"
+      }
+    },
+    "signal": {
+      "season": "off_peak",
+      "is_weekend": false,
+      "is_holiday": false,
+      "hour_of_day": 19,
+      "weather_signal": 0.0,
+      "weather_celsius": 27.6,
+      "flight_ferry": 0.0,
+      "event_ticket_sales": 1.0,
+      "event_density": 1.0,
+      "event_source": "firecrawl_tourism",
+      "visitors_stats": 0.0,
+      "mha_occ_mass": 0.9545,
+      "mha_occ_luxury": 0.966,
+      "mha_market_occ": 1.0,
+      "blended_market_demand_signal": 0.6963,
+      "mha_demand_state": "HIGH",
+      "dsec_market_occ": 0.2408,
+      "border_flow": 1.0,
+      "border_flow_source": "firecrawl_search",
+      "zhuhai_saturation": 0.743,
+      "zhuhai_source": "firecrawl_search",
+      "ota_booking_pace": 0.0,
+      "ota_pace_source": "booking_fc",
+      "holiday": 0.0,
+      "weekend": 0.0
+    }
+  },
+  "summary": {
+    "samples": 1,
+    "avg_price": 1064.0,
+    "anomalies": 0
+  },
+  "records": [
+    {
+      "hotel_id": "MAC_3ST_EMPE_059",
+      "hotel_name": "帝濠酒店",
+      "star": 3,
+      "scenario": "NORMAL_OPS",
+      "scenario_category": "normal",
+      "issues": [],
+      "result": {
+        "hotel_id": "MAC_3ST_EMPE_059",
+        "market_segment": "macau_3star_plus",
+        "season": "off_peak",
+        "demand_score": 0.4503579971672839,
+        "demand_state": "HIGH",
+        "recommended_price": 1064,
+        "expected_revenue_lift": "+8.80%",
+        "confidence": "High",
+        "summary": "Recommended price is MOP 1075, optimized for Macau 3-star and above revenue management.",
+        "meta": "Seasonal base MOP 981 -> raw MOP 1075 -> fair MOP 1075 -> final MOP 1075",
+        "dynamic_ceiling": 1084.6,
+        "guardrail_report": {
+          "passed": true,
+          "violations": [],
+          "final_price": 1075,
+          "approval_required": null
+        },
+        "shadow_price": null,
+        "recommendation_log": {
+          "hotel_id": "MAC_3ST_EMPE_059",
+          "market_segment": "macau_3star_plus",
+          "season": "off_peak",
+          "base_price": 1066.0,
+          "demand_score": 0.4503579971672839,
+          "demand_state": "HIGH",
+          "seasonal_base": 980.72,
+          "demand_adjustment": 0.12,
+          "competition_adjustment": -0.0204,
+          "profit_adjustment": -0.0133,
+          "raw_price": 1075.261408,
+          "floor_price": 913.5,
+          "ceiling_price": 1066.0,
+          "dynamic_ceiling": 1084.6,
+          "recommended_price": 1075,
+          "confidence": "High",
+          "expected_lift": "+4.6%",
+          "shadow_price": null,
+          "model_weights_hash": "0b5c606d4d5d",
+          "guardrail_violations": [],
+          "factor_breakdown": [
+            {
+              "name": "competitor_price",
+              "raw_value": 900.56396484375,
+              "value_used": 900.56396484375,
+              "contribution": 734881.2717
+            },
+            {
+              "name": "base_price",
+              "raw_value": 1066.0,
+              "value_used": 1066.0,
+              "contribution": 397955.4188
+            },
+            {
+              "name": "base_price_lag_24h",
+              "raw_value": 1066.0,
+              "value_used": 1066.0,
+              "contribution": 230291.2797
+            },
+            {
+              "name": "border_flow",
+              "raw_value": 1.0,
+              "value_used": 1.0,
+              "contribution": 37400.5948
+            },
+            {
+              "name": "occ_rolling_30d_mean",
+              "raw_value": 0.6867916584014893,
+              "value_used": 0.6867916584014893,
+              "contribution": 997.0989
+            },
+            {
+              "name": "occ_rolling_7d_mean",
+              "raw_value": 0.6807143092155457,
+              "value_used": 0.6807143092155457,
+              "contribution": 407.5822
+            },
+            {
+              "name": "price_ratio",
+              "raw_value": 1.1837027072906494,
+              "value_used": 1.1837027072906494,
+              "contribution": 172.9119
+            },
+            {
+              "name": "dsec_market_occ",
+              "raw_value": 0.24079999327659607,
+              "value_used": 0.24079999327659607,
+              "contribution": 148.4122
+            },
+            {
+              "name": "_v32_path",
+              "raw_value": 1,
+              "value_used": 1,
+              "contribution": 0.0,
+              "meta": "lightgbm"
+            }
+          ]
+        },
+        "scarcity_index": 0.65,
+        "scarcity_adjustment": 0.0101,
+        "crm_adjustment": 0.0,
+        "crm_detail": "CRM signal treated as minor modifier in midscale market.",
+        "fairness_report": {
+          "original_proposed_price": 1075.261408,
+          "velocity": {
+            "capped_price": 1075.261408,
+            "reason": "No previous price for velocity comparison.",
+            "was_capped": false
+          },
+          "fairness_index": {
+            "score": 100.0,
+            "assessment": "No 30-day average available; fairness assumed."
+          },
+          "historical_anchor": {
+            "anchored_price": 1075.261408,
+            "reason": "No historical average available; price unchanged."
+          },
+          "loyalty_cap": {
+            "adjusted_price": 1075.261408,
+            "reason": "No loyalty tier cap applicable."
+          },
+          "final_fair_price": 1075.261408,
+          "any_adjustment_applied": false
+        },
+        "bundle_offers": [],
+        "reasons": [
+          {
+            "title": "Demand Engine",
+            "detail": "Demand state HIGH with score 0.45."
+          },
+          {
+            "title": "Supply Scarcity",
+            "detail": "Supply Balanced (remaining=28/80, velocity=0/24h, days_out=7, cancel_rate=10%): scarcity_index=0.51, adjustment=+1.0%"
+          },
+          {
+            "title": "Market Positioning",
+            "detail": "Competitor price MOP 901 influences market alignment (star=3)."
+          },
+          {
+            "title": "CRM Engine",
+            "detail": "CRM signal treated as minor modifier in midscale market."
+          },
+          {
+            "title": "Profit Engine",
+            "detail": "Occupancy at 65% adjusts for revenue optimization."
+          },
+          {
+            "title": "Fair Pricing",
+            "detail": "Price passed all fairness checks."
+          },
+          {
+            "title": "Guardrails",
+            "detail": "Policy engine evaluated 7 rules. Final output clipped between MOP 913 and MOP 1084."
+          }
+        ],
+        "factor_breakdown": [
+          {
+            "name": "competitor_price",
+            "raw_value": 900.56396484375,
+            "value_used": 900.56396484375,
+            "contribution": 734881.2717
+          },
+          {
+            "name": "base_price",
+            "raw_value": 1066.0,
+            "value_used": 1066.0,
+            "contribution": 397955.4188
+          },
+          {
+            "name": "base_price_lag_24h",
+            "raw_value": 1066.0,
+            "value_used": 1066.0,
+            "contribution": 230291.2797
+          },
+          {
+            "name": "border_flow",
+            "raw_value": 1.0,
+            "value_used": 1.0,
+            "contribution": 37400.5948
+          },
+          {
+            "name": "occ_rolling_30d_mean",
+            "raw_value": 0.6867916584014893,
+            "value_used": 0.6867916584014893,
+            "contribution": 997.0989
+          },
+          {
+            "name": "occ_rolling_7d_mean",
+            "raw_value": 0.6807143092155457,
+            "value_used": 0.6807143092155457,
+            "contribution": 407.5822
+          },
+          {
+            "name": "price_ratio",
+            "raw_value": 1.1837027072906494,
+            "value_used": 1.1837027072906494,
+            "contribution": 172.9119
+          },
+          {
+            "name": "dsec_market_occ",
+            "raw_value": 0.24079999327659607,
+            "value_used": 0.24079999327659607,
+            "contribution": 148.4122
+          },
+          {
+            "name": "_v32_path",
+            "raw_value": 1,
+            "value_used": 1,
+            "contribution": 0.0,
+            "meta": "lightgbm"
+          }
+        ],
+        "predicted_occupancy": 0.611,
+        "predicted_revpar": 650.13,
+        "baseline_revpar": 717.1,
+        "predicted_trevpar": 762.2,
+        "baseline_trevpar": 777.3,
+        "expected_room_revenue_lift": "+1.7%",
+        "elasticity_used": 1.854,
+        "elasticity_profile": "3star_ota_shoulder",
+        "max_price_premium": -0.02,
+        "optimal_occupancy_target": 0.78,
+        "ml_enabled": true,
+        "ml_elasticity_multiplier": 1.03,
+        "ml_premium_delta": -0.02,
+        "ml_occupancy_delta": -0.04,
+        "ml_state_version": 1,
+        "ancillary_profile": "3star",
+        "ancillary_ratio_used": 0.3,
+        "ancillary_margin_used": 0.28,
+        "ancillary_per_occ": 77.2,
+        "maml_reserved": true,
+        "maml_layer4_enabled": false,
+        "maml_fast_adapt_used": false,
+        "maml_market_tier": "3to4_star",
+        "maml_feature_schema_version": "v1.0",
+        "maml_profile_name": "3star_ota_shoulder",
+        "maml_state_version": 1,
+        "maml_meta_hotel_id_hash": "c7327a30c1fd9f7b",
+        "maml_readiness": {
+          "hotel_count": 76,
+          "market_tier_count": 2,
+          "new_hotels_30d": 0,
+          "activation_thresholds": {
+            "hotel_count": 200,
+            "market_tier_count": 3,
+            "new_hotels_30d": 5
+          },
+          "layer4_ready": false,
+          "layer4_enabled": false
+        },
+        "ml_layer_active": true,
+        "optimization_objective": "light_trevpar",
+        "elasticity_source": "macau_static",
+        "price_risk_score": 18.53,
+        "opportunity_score": 0.0,
+        "rate_confidence": 94.44,
+        "v6_reason": {
+          "market_price": 919.3333333333334,
+          "trevpar": 650.13,
+          "demand_state": "HIGH"
+        },
+        "hotel_profile_version": "V6",
+        "revenue_attribution": {
+          "baseline_revpar": 597.57,
+          "optimized_revpar": 650.1,
+          "mare_contribution": 52.54,
+          "crm_contribution": 0.0,
+          "selfacq_contribution": 0.0,
+          "total_lift_mop": 52.54,
+          "total_lift_pct": 8.79
+        }
+      }
+    }
+  ]
+}

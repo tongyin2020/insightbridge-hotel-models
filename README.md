@@ -1,64 +1,32 @@
-# InsightBridge 澳门酒店AI模型系统 v2026
+# InsightBridge Final Three Models Workspace
 
-备份日期：2026-05-31
+当前主工作区已经切换为“最终三个模型”模式，不再使用旧的“三大系统九模型”运行框架。
 
-## 系统架构：3个AI系统 × 3个模型 = 9个核心模型
+## 当前唯一主模型
 
----
+- `MARE` 房价模型
+- `Director` 三模块集成模型
+- `SelfACQ` 自主寻客模型
 
-## System 1 — ChatGPT/Harness 驱动
-**目录：** `system1_chatgpt_harness/`
+最终三模型正式目录：
+- `/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/final_three_models_release_20260625`
 
-| 文件 | 模型 |
-|------|------|
-| `run_21d_harness.py` | MARE定价 + DirectorAI CRM + SelfACQ 获客（三合一运行器）|
-| `hotel_universe.json` | 76家酒店数据宇宙 |
+## 当前主入口
 
----
+- 运行最终三模型：
+  - `python3 /Users/tongyin/Desktop/InsightBridge_九大模型_v2026/run_final_models_only.py`
+- 检查最终三模型结果：
+  - `python3 /Users/tongyin/Desktop/InsightBridge_九大模型_v2026/check_final_models.py`
 
-## System 2 — Claude 驱动仿真系统
-**目录：** `system2_claude_simulation/`
+## 运行说明
 
-| 文件 | 功能 |
-|------|------|
-| `run_simulation.py` | 主运行器（MARE_ALL / MARE_23_STAR / DIRECTOR / SELFACQ）|
-| `pricing_engine.py` | MARE定价引擎核心 |
-| `recommendations.py` | 推荐生成器 |
-| `report.py` | 报告生成 |
-| `hotel_roster_76.py` | 76家酒店名单 |
-| `objective_modes.py` | 目标模式配置 |
+- 最终三模型现在使用自己的内嵌运行层：
+  - `/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/final_three_models_release_20260625/embedded_runtime`
+- 旧三系统源码、旧检查脚本、旧日志和旧自动化入口已经退役，不再作为当前运行主线。
 
----
+## 退役区
 
-## System 3 — CrewAI 多智能体系统
-**目录：** `system3_crewai/`
+历史九模型/三系统资料已移入：
+- `/Users/tongyin/Desktop/InsightBridge_九大模型_v2026/legacy_retired_20260625`
 
-| 文件 | 功能 |
-|------|------|
-| `main.py` | 主运行器（MARE_ALL_FC / MARE_23_STAR_FC / DIRECTOR / SELFACQ）|
-| `agents.py` | 智能体定义（MARE Agent / CRM Agent / ACQ Agent）|
-| `tasks.py` | 任务定义与调度 |
-
----
-
-## 数据采集层
-**目录：** `hotel_collector/`
-
-| 文件 | 功能 |
-|------|------|
-| `hotel_data_collector.py` | 76家酒店真实数据采集器 |
-| `acquisition_mdp.py` | 客户获取MDP决策引擎 |
-| `sentiment_engine.py` | 声誉情感分析引擎 |
-
----
-
-## 市场分级说明
-
-| 市场 | 星级 | 参考价来源 |
-|------|------|-----------|
-| 3-4★市场 | 3/4星级酒店 | price_snapshots tier = 3_star + 4_star |
-| 5★豪华市场 | 5星豪华 | price_snapshots tier = 5_star + 5_deluxe |
-
----
-
-*InsightBridge Global — Macau Hotel AI Revenue Management System*
+该目录仅作历史留档，不再作为当前生产/验证入口。
